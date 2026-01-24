@@ -1,62 +1,0 @@
-
-$$ TITAN TRADE v6.0 (GUARDIAN EDITION) $$
-----------------------------------------------
-Loading Market Cache...
-
-=== MARKET STATUS: BULL (Score: 1.0) ===
-
-Scanning & Validating (v5 Reality Check)...
-Analyzing 503 stocks in parallel (Max 10 workers)...
-Progress: 25/503Progress: 50/503Progress: 75/503 > FOUND: ATO (DIP BUY) WR:63% PF:2.91
- > FOUND: BX (DIP BUY) WR:60% PF:2.02
-Progress: 100/503Progress: 125/503 > FOUND: COF (DIP BUY) WR:58% PF:1.27
- > FOUND: CINF (DIP BUY) WR:75% PF:4.81
- > FOUND: C (DIP BUY) WR:59% PF:1.68
-Progress: 150/503 > FOUND: CMS (DIP BUY) WR:61% PF:1.35
- > FOUND: DAY (DIP BUY) WR:60% PF:0.42
-Progress: 175/503 > FOUND: DTE (DIP BUY) WR:56% PF:1.77
- > FOUND: EW (DIP BUY) WR:56% PF:1.19
- > FOUND: EXPE (DIP BUY) WR:76% PF:3.36
-Progress: 200/503Progress: 225/503 > FOUND: F (DIP BUY) WR:88% PF:6.93
- > FOUND: FTV (DIP BUY) WR:59% PF:1.82
-Progress: 250/503 > FOUND: GM (DIP BUY) WR:77% PF:2.42
- > FOUND: INCY (DIP BUY) WR:68% PF:2.60
-Progress: 275/503Progress: 300/503 > FOUND: JCI (DIP BUY) WR:64% PF:1.76
- > FOUND: KIM (DIP BUY) WR:59% PF:1.14
- > FOUND: L (DIP BUY) WR:70% PF:3.21
-Progress: 325/503 > FOUND: MCK (DIP BUY) WR:66% PF:5.08
- > FOUND: MDT (DIP BUY) WR:62% PF:1.91
- > FOUND: MTD (DIP BUY) WR:57% PF:1.93
-Progress: 350/503Progress: 375/503Progress: 400/503 > FOUND: PNR (DIP BUY) WR:66% PF:3.33
-Progress: 425/503 > FOUND: REGN (DIP BUY) WR:60% PF:1.41
- > FOUND: STT (DIP BUY) WR:63% PF:1.17
-Progress: 450/503 > FOUND: STE (DIP BUY) WR:58% PF:0.94
-Progress: 475/503 > FOUND: VLTO (DIP BUY) WR:62% PF:2.68
- > FOUND: WELL (DIP BUY) WR:66% PF:4.76
-Progress: 500/503 > FOUND: WTW (DIP BUY) WR:66% PF:1.49
- > FOUND: XEL (DIP BUY) WR:63% PF:2.48
- > FOUND: XYL (DIP BUY) WR:90% PF:14.16
-
-----------------------------------------
- SCAN FILTER REPORT
-----------------------------------------
-  Total               : 503
-  No Data             : 2
-  Low Price/Liquidity : 0
-  Downtrend (Bear)    : 174
-  No Setup (VCP/Dip)  : 70
-  Failed Backtest     : 141
-  Bad Risk/Reward     : 87
-  Earnings Risk       : 0
-  Passed              : 29
-----------------------------------------
-
-
-
-
-============================================================
-  TITAN GUARDIAN v6.0 - RESULT SUMMARY
-============================================================
-    * 'BUY NOW' = Price has triggered (Active Breakout)
-    * 'PENDING' = Place Buy Stop Order at Trigger Price
-------------------------------------------------------------
