@@ -1,0 +1,7 @@
+__pycache__/
+cache_sp500_elite/
+cache_sp500_pro/
+cache_sp500_v5/
+*.csv
+*.txt
+*.png
