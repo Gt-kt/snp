@@ -136,6 +136,37 @@ class MarketBrain:
         self.closes = data["Close"]
         self.volumes = data["Volume"]
         
+        # Vectorized indicators (performance + consistency)
+        self.sma50 = self.closes.rolling(50).mean()
+        self.sma150 = self.closes.rolling(150).mean()
+        self.sma200 = self.closes.rolling(200).mean()
+        
+        delta = self.closes.diff()
+        gain = delta.clip(lower=0).rolling(14).mean()
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rs = gain / (loss + 1e-9)
+        self.rsi14 = 100 - (100 / (1 + rs))
+        
+        tr1 = self.highs - self.lows
+        tr2 = (self.highs - self.closes.shift(1)).abs()
+        tr3 = (self.lows - self.closes.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        self.atr14 = tr.rolling(14).mean()
+        
+        self.high_52w = self.highs.rolling(252).max()
+        self.vol_avg20 = self.volumes.rolling(20).mean()
+        
+        self.ret_1m = self.closes.pct_change(21)
+        self.ret_3m = self.closes.pct_change(63)
+        self.ret_6m = self.closes.pct_change(126)
+        
+        # Relative strength vs SPY (3M) for ranking/selection
+        if "SPY" in self.closes.columns:
+            spy_ret = self.closes["SPY"].pct_change(63)
+            self.rel_strength_3m = self.ret_3m.sub(spy_ret, axis=0)
+        else:
+            self.rel_strength_3m = self.ret_3m * 0
+        
     def analyze_regime(self) -> MarketRegime:
         """Analyze broader market health."""
         print("Analyzing Market Regime...")
@@ -176,34 +207,36 @@ class MarketBrain:
         """Rank sectors by Momentum (Relative Strength)."""
         print("Ranking Sectors...")
         # Calculate performance for each stock
-        c = self.closes
-        
-        # 1 Month and 3 Month Performance
-        p1m = c.pct_change(21).iloc[-1]
-        p3m = c.pct_change(63).iloc[-1]
+        p1m = self.ret_1m.iloc[-1]
+        p3m = self.ret_3m.iloc[-1]
+        rs3m = self.rel_strength_3m.iloc[-1]
         
         # Group by Sector
         sector_scores = {}
         for ticker, sector in self.sector_map.items():
-            if ticker not in c.columns: continue
+            if ticker not in self.closes.columns: continue
             if sector not in sector_scores:
                 sector_scores[sector] = {"p1m": [], "p3m": []}
             
             val1 = p1m.get(ticker, np.nan)
             val3 = p3m.get(ticker, np.nan)
             
+            val_rs = rs3m.get(ticker, np.nan)
+            
             if not np.isnan(val1): sector_scores[sector]["p1m"].append(val1)
             if not np.isnan(val3): sector_scores[sector]["p3m"].append(val3)
+            if not np.isnan(val_rs): sector_scores[sector].setdefault("rs3m", []).append(val_rs)
             
         results = []
         for sect, metrics in sector_scores.items():
             if not metrics["p1m"]: continue
             avg_p1m = np.mean(metrics["p1m"])
             avg_p3m = np.mean(metrics["p3m"])
+            avg_rs = np.mean(metrics.get("rs3m", [0]))
             
-            # Score: Weight recent momentum
-            score = (avg_p1m * 0.6) + (avg_p3m * 0.4)
-            results.append({"Sector": sect, "Score": score, "1M": avg_p1m, "3M": avg_p3m})
+            # Score: Weight recent momentum + relative strength
+            score = (avg_p1m * 0.45) + (avg_p3m * 0.35) + (avg_rs * 0.20)
+            results.append({"Sector": sect, "Score": score, "1M": avg_p1m, "3M": avg_p3m, "RS3M": avg_rs})
             
         df = pd.DataFrame(results).sort_values("Score", ascending=False)
         return df
@@ -213,6 +246,17 @@ class MarketBrain:
         print(f"Scanning 500+ stocks (Filtering for Top Sectors: {', '.join(top_sectors)})...")
         
         opportunities = []
+        latest_close = self.closes.iloc[-1]
+        latest_sma50 = self.sma50.iloc[-1]
+        latest_sma150 = self.sma150.iloc[-1]
+        latest_sma200 = self.sma200.iloc[-1]
+        latest_rsi = self.rsi14.iloc[-1]
+        latest_atr = self.atr14.iloc[-1]
+        latest_high_52w = self.high_52w.iloc[-1]
+        latest_vol = self.volumes.iloc[-1]
+        latest_vol_avg20 = self.vol_avg20.iloc[-1]
+        latest_rs3m = self.rel_strength_3m.iloc[-1]
+        latest_ret_6m = self.ret_6m.iloc[-1]
         
         for ticker in self.closes.columns:
             if ticker == "SPY": continue
@@ -223,39 +267,30 @@ class MarketBrain:
             
             # Get Ticker Data
             try:
-                # Optimized extraction
-                # We need last 260 days approx
-                limit = 300
-                c = self.closes[ticker].tail(limit)
-                h = self.highs[ticker].tail(limit)
-                l = self.lows[ticker].tail(limit)
-                v = self.volumes[ticker].tail(limit)
+                c = self.closes[ticker].dropna()
+                if len(c) < 200: 
+                    continue
                 
-                if len(c) < 200: continue
+                curr_price = latest_close.get(ticker, np.nan)
+                sma50 = latest_sma50.get(ticker, np.nan)
+                sma150 = latest_sma150.get(ticker, np.nan)
+                sma200 = latest_sma200.get(ticker, np.nan)
+                atr = latest_atr.get(ticker, np.nan)
+                rsi = latest_rsi.get(ticker, np.nan)
+                high_52 = latest_high_52w.get(ticker, np.nan)
+                vol = latest_vol.get(ticker, np.nan)
+                vol_avg20 = latest_vol_avg20.get(ticker, np.nan)
+                rs3m = latest_rs3m.get(ticker, 0.0)
+                ret_6m = latest_ret_6m.get(ticker, 0.0)
                 
-                curr_price = c.iloc[-1]
+                if np.isnan(curr_price) or np.isnan(sma200) or np.isnan(atr) or np.isnan(high_52):
+                    continue
                 
-                # --- Indicators ---
-                sma50 = c.rolling(50).mean().iloc[-1]
-                sma150 = c.rolling(150).mean().iloc[-1]
-                sma200 = c.rolling(200).mean().iloc[-1]
-                
-                # ATR
-                tr1 = h - l
-                tr2 = (h - c.shift(1)).abs()
-                tr3 = (l - c.shift(1)).abs()
-                tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-                atr = tr.rolling(14).mean().iloc[-1]
-                
-                # RSI
-                delta = c.diff()
-                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                rs = gain / (loss + 1e-9)
-                rsi = (100 - (100 / (1 + rs))).iloc[-1]
-                
-                # 52 Week High
-                high_52 = h.rolling(252).max().iloc[-1]
+                # Data quality filters
+                if vol_avg20 <= 0 or vol <= 0:
+                    continue
+                if atr / curr_price > 0.12:
+                    continue
                 
                 # --- STRATEGY 1: QUALITY PULLBACK (THE DIP BUY) ---
                 # Criteria:
@@ -272,8 +307,9 @@ class MarketBrain:
                     
                     is_pullback = (dist_sma50 > -0.02) and (dist_sma50 < 0.04)
                     is_oversold = rsi < 35
+                    is_strong = (rs3m > 0) and (ret_6m > 0)
                     
-                    if is_pullback or is_oversold:
+                    if (is_pullback or is_oversold) and is_strong:
                         # VALID PULLBACK SETUP
                         stop = curr_price - (2.5 * atr) # Wide stop for volatility
                         target = curr_price + (4.0 * atr) # 1:1.5 min
@@ -287,21 +323,24 @@ class MarketBrain:
                         else:
                             notes.append("Targeting Blue Sky Breakout")
                             
-                        score = 80 - rsi # Lower RSI = Better score
+                        trend_strength = (sma50 - sma200) / sma200
+                        score = 60 + (trend_strength * 200) + (rs3m * 200) + (40 - rsi)
                         
-                        opportunities.append(TradeSetup(
-                            ticker=ticker,
-                            sector=sec,
-                            strategy="Trend Pullback",
-                            price=curr_price,
-                            stop_loss=stop,
-                            target_1=target,
-                            target_2=target * 1.1,
-                            risk_reward=(target-curr_price)/(curr_price-stop),
-                            score=score,
-                            notes=notes
-                        ))
-                        continue
+                        rr = (target - curr_price) / max(curr_price - stop, 1e-9)
+                        if rr >= 1.5:
+                            opportunities.append(TradeSetup(
+                                ticker=ticker,
+                                sector=sec,
+                                strategy="Trend Pullback",
+                                price=curr_price,
+                                stop_loss=stop,
+                                target_1=target,
+                                target_2=target * 1.1,
+                                risk_reward=rr,
+                                score=score,
+                                notes=notes + [f"RS vs SPY (3M): {rs3m:.1%}"]
+                            ))
+                            continue
                         
                 # --- STRATEGY 2: POWER BREAKOUT ---
                 # Criteria:
@@ -313,28 +352,31 @@ class MarketBrain:
                 if 0 <= dist_high < 0.05:
                     # Verify Consolidation (VCP)
                     # 5 Day Price Range is tight (<3%)
-                    range_5d = (h.tail(5).max() - l.tail(5).min()) / curr_price
+                    range_5d = (self.highs[ticker].tail(5).max() - self.lows[ticker].tail(5).min()) / curr_price
+                    vol_spike = vol > (vol_avg20 * 1.5)
                     
-                    if range_5d < 0.05:
+                    if range_5d < 0.05 and vol_spike and rs3m > 0:
                         # BREAKOUT SETUP
                         # Stop is below the consolidation range
-                        stop = l.tail(5).min() - (0.5 * atr)
+                        stop = self.lows[ticker].tail(5).min() - (0.5 * atr)
                         target = high_52 * 1.20 # 20% Breakout
                         
-                        score = 80 + (1/range_5d) # Tighter range = Higher Score
+                        score = 70 + (1/range_5d) + (rs3m * 200)
+                        rr = (target - curr_price) / max(curr_price - stop, 1e-9)
                         
-                        opportunities.append(TradeSetup(
-                            ticker=ticker,
-                            sector=sec,
-                            strategy="Power Breakout",
-                            price=curr_price,
-                            stop_loss=stop,
-                            target_1=high_52 * 1.05, # Quick profit at break
-                            target_2=high_52 * 1.20, # Runner
-                            risk_reward=(target-curr_price)/(curr_price-stop),
-                            score=score,
-                            notes=["Tight Consolidation", "Near ATH"]
-                        ))
+                        if rr >= 1.5:
+                            opportunities.append(TradeSetup(
+                                ticker=ticker,
+                                sector=sec,
+                                strategy="Power Breakout",
+                                price=curr_price,
+                                stop_loss=stop,
+                                target_1=high_52 * 1.05, # Quick profit at break
+                                target_2=high_52 * 1.20, # Runner
+                                risk_reward=rr,
+                                score=score,
+                                notes=["Tight Consolidation", "Near ATH", "Volume Spike", f"RS vs SPY (3M): {rs3m:.1%}"]
+                            ))
 
             except Exception as e:
                 continue
@@ -365,15 +407,18 @@ def main():
     print(f"Breadth: {regime.breadth_50:.1f}% > SMA50 | {regime.breadth_200:.1f}% > SMA200")
     print(f"Details: {regime.details}")
     
-    if regime.spy_trend == "BEARISH":
-        print("\n[CAUTION] Market is in a downtrend. Reducing search scope to Defensive Sectors only.")
-        # Logic could be added here to only select Utilities/Consumer Staples
-        # For now, we warn the user.
-        proceed = input("Proceed anyway? (y/n): ")
-        if proceed.lower() != 'y': return
-
     # B. Sector Rotation
     sector_ranks = brain.rank_sectors()
+    sector_ranks_full = sector_ranks.copy()
+
+    if regime.spy_trend == "BEARISH":
+        print("\n[CAUTION] Market is in a downtrend. Reducing search scope to Defensive Sectors only.")
+        defensive = ["Utilities", "Consumer Staples", "Health Care"]
+        sector_ranks = sector_ranks[sector_ranks["Sector"].isin(defensive)]
+        if sector_ranks.empty:
+            print("No defensive sectors found in universe. Using full sector list.")
+            sector_ranks = sector_ranks_full
+
     print("\nTOP SECTORS (Momentum):")
     print(tabulate(sector_ranks.head(5), headers="keys", tablefmt="simple", floatfmt=".2f"))
     
