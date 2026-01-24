@@ -1,0 +1,2 @@
+﻿ticker,shares,entry_price,stop_loss_price,take_profit_1,take_profit_2,note
+AAPL,16,270.97,261.98,292.65,311.62,Smart Trade: Move Stop to BE if +4%.
