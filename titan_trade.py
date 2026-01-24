@@ -139,7 +139,7 @@ class StrategyValidator:
                 return (closes[j] - entry) / entry
         return 0
 
-    def backtest_breakout(self, days=300, depth=0.15, vol_mult=1.0, target_mult=3.5):
+    def backtest_breakout(self, days=300, depth=0.15, vol_mult=1.5, target_mult=3.5):
         """
         Fast simulation of VCP Breakouts on this specific stock.
         """
@@ -154,7 +154,6 @@ class StrategyValidator:
         
         # Pre-calc Indicators
         sma50 = df['Close'].rolling(50).mean().values
-        sma200 = df['Close'].rolling(200).mean().values
         sma200 = df['Close'].rolling(200).mean().values
         # ATR Pre-calc (Simplified 14-day)
         tr = np.maximum(df['High'] - df['Low'], np.abs(df['High'] - df['Close'].shift(1)))
@@ -183,7 +182,8 @@ class StrategyValidator:
             if (h_handle - curr_c) / h_handle > 0.06: continue
             
             # Vol Check
-            if volumes[i] > (vol_sma[i] * 1.5): continue # Don't buy on huge down/churn days? (Simplified)
+            if volumes[i] > (vol_sma[i] * vol_mult): 
+                continue # Don't buy on huge down/churn days? (Simplified)
             
             # SETUP FOUND at end of day 'i'.
             # CHECK NEXT DAY (i+1) for Trigger
@@ -331,6 +331,13 @@ class TitanBrain:
     def __init__(self):
         if not os.path.exists(CACHE_DIR): os.makedirs(CACHE_DIR)
 
+    def calculate_rsi(self, series, period=14):
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0).rolling(period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+        rs = gain / (loss + 1e-9)
+        return 100 - (100 / (1 + rs))
+
     def get_data(self):
         # Tickers
         if os.path.exists(SP500_CACHE_FILE) and (time.time() - os.path.getmtime(SP500_CACHE_FILE) < 604800):
@@ -381,7 +388,7 @@ class TitanBrain:
         tr = pd.concat([h-l, (h-c).abs(), (l-c).abs()], axis=1).max(axis=1)
         return float(tr.rolling(14).mean().iloc[-1])
 
-    def process_ticker(self, t, data, mkt_status):
+    def process_ticker(self, t, data, mkt_status, spy_close):
         """Analyze a single ticker. Returns (TitanSetup, RejectionReason)."""
         try:
             # Extract DF
@@ -397,25 +404,55 @@ class TitanBrain:
             c = float(df['Close'].iloc[-1])
             if c < 5.0: return None, "Low Price/Liquidity" # Penny stock filter
             
-            sma50 = float(df['Close'].rolling(50).mean().iloc[-1])
-            sma200 = float(df['Close'].rolling(200).mean().iloc[-1])
+            close = df['Close']
+            high = df['High']
+            low = df['Low']
+            volume = df['Volume']
+
+            sma50 = float(close.rolling(50).mean().iloc[-1])
+            sma200 = float(close.rolling(200).mean().iloc[-1])
+            sma50_prev = float(close.rolling(50).mean().iloc[-21])
+            sma200_prev = float(close.rolling(200).mean().iloc[-21])
+            vol_avg20 = float(volume.rolling(20).mean().iloc[-1])
+            dollar_vol_avg20 = vol_avg20 * c
+            if dollar_vol_avg20 < 5_000_000: 
+                return None, "Low Price/Liquidity"
+
+            atr = self.calculate_atr(df)
+            if atr <= 0 or atr / c > 0.12:
+                return None, "Low Price/Liquidity"
             
+            # Relative strength vs SPY (3M)
+            rs_3m = close.pct_change(63).iloc[-1]
+            if spy_close is not None:
+                spy_rs = spy_close.pct_change(63).iloc[-1]
+                rs_diff = rs_3m - spy_rs
+            else:
+                rs_diff = rs_3m
+            if np.isnan(rs_diff):
+                rs_diff = 0.0
+            ret_6m = close.pct_change(126).iloc[-1]
+            rsi14 = self.calculate_rsi(close).iloc[-1]
+            sma_uptrend = sma50 > sma50_prev and sma200 > sma200_prev
+
             # Setup Flags
             is_breakout_setup = False
             is_dip_setup = False
             
             # Breakout Candidate? Trend Up + VCP
-            if c > sma50 > sma200:
-                h_h = float(df['High'][-15:].max())
-                l_h = float(df['Low'][-15:].min())
+            if c > sma50 > sma200 and rs_diff > 0 and ret_6m > 0 and sma_uptrend:
+                h_h = float(high[-15:].max())
+                l_h = float(low[-15:].min())
                 depth = (h_h - l_h) / h_h
-                if depth < 0.25 and (h_h - c)/h_h < 0.08: # Widened slightly for "Perfect" catches
+                vol_spike = volume.iloc[-1] > (vol_avg20 * 1.2)
+                if depth < 0.25 and (h_h - c)/h_h < 0.08 and vol_spike: # Demand + tight range
                     is_breakout_setup = True
                     
             # Dip Candidate? Trend Up + Near SMA50
-            if c > sma200:
+            if c > sma200 and rs_diff > -0.02 and ret_6m > -0.02 and sma_uptrend:
                 dist = (c - sma50) / sma50
-                if -0.03 < dist < 0.04:
+                vol_ok = volume.iloc[-1] <= (vol_avg20 * 1.2)
+                if -0.03 < dist < 0.04 and vol_ok and rsi14 > 40:
                     is_dip_setup = True
                     
             if not (is_breakout_setup or is_dip_setup): 
@@ -445,7 +482,6 @@ class TitanBrain:
                     strategy_name = "BREAKOUT"
                     final_res = res
                     trigger = float(df['High'][-15:].max()) + 0.02
-                    atr = self.calculate_atr(df)
                     stop = trigger - (atr * 2)
                     
                     # Apply Optimized Target
@@ -460,8 +496,8 @@ class TitanBrain:
                     strategy_name = "DIP BUY"
                     final_res = res
                     trigger = c
-                    stop = c * 0.93
-                    target = c * 1.10
+                    stop = c - (atr * 2.0)
+                    target = c + (atr * 3.0)
             
             if not final_res:
                 return None, "Rejected (Low Win%)"
@@ -475,7 +511,7 @@ class TitanBrain:
             kelly = (W - (1-W)/R) * 0.5
             if kelly < 0: kelly = 0
             
-            risk_amt = ACCOUNT_SIZE * 0.01
+            risk_amt = min(RISK_PER_TRADE, ACCOUNT_SIZE * 0.01)
             shares = int(risk_amt / (trigger - stop)) if (trigger - stop) > 0 else 0
             
             # --- SUPER POWER 1: INFO CHECK ---
@@ -522,6 +558,11 @@ class TitanBrain:
 
     def scan(self):
         tickers, data = self.get_data()
+        spy_close = None
+        if isinstance(data.columns, pd.MultiIndex) and "SPY" in data.columns.levels[0]:
+            spy_df = data["SPY"].dropna()
+            if "Close" in spy_df:
+                spy_close = spy_df["Close"]
         
         # 1. Check Market
         regime = MarketRegime(data)
@@ -541,7 +582,10 @@ class TitanBrain:
         # Determine number of threads
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             # Submit all
-            future_to_ticker = {executor.submit(self.process_ticker, t, data, mkt_status): t for t in tickers}
+            future_to_ticker = {
+                executor.submit(self.process_ticker, t, data, mkt_status, spy_close): t
+                for t in tickers
+            }
             
             completed = 0
             for future in concurrent.futures.as_completed(future_to_ticker):
@@ -630,7 +674,6 @@ def main():
     print("\n$$ TITAN TRADE v6.0 (GUARDIAN EDITION) $$")
     print("----------------------------------------------")
     
-    brain = TitanBrain()
     brain = TitanBrain()
     try:
         setups, stats = brain.scan()
