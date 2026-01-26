@@ -5,3 +5,7 @@ cache_sp500_v5/
 *.csv
 *.txt
 *.png
+reports/
+*.log
+paper_trades.json
+paper_trades_closed.csv
