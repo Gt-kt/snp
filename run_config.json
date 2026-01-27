@@ -58,10 +58,10 @@
   "log_level": "INFO",
   "log_file": null,
   "no_log_file": false,
-  "report_rows": 10,
+  "report_rows": 15,
   "save_json": true,
   "near_miss_report": true,
   "near_miss_top": 50,
-  "no_history": true,
-  "run_timestamp": "2026-01-26T17:12:13.574012"
+  "no_history": false,
+  "run_timestamp": "2026-01-26T23:59:05.237693"
 }

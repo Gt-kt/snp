@@ -91,6 +91,14 @@ SAFE_MODE_SETTINGS = {
 RISK_PER_TRADE = 1000.0  # $1000 Risk per trade
 ACCOUNT_SIZE = 100000.0
 
+# Pro Trader Settings (New)
+MAX_POSITIONS = 8  # Maximum concurrent positions
+MAX_SECTOR_EXPOSURE = 3  # Max stocks per sector
+VIX_HIGH_THRESHOLD = 25  # Reduce size when VIX > this
+VIX_EXTREME_THRESHOLD = 30  # Cut size 50% when VIX > this
+GAP_PROTECTION = True  # Filter stocks with large overnight gaps
+MAX_GAP_PCT = 0.05  # 5% max gap history allowed
+
 # Quality Filters (defaults preserve current behavior)
 DEFAULT_MIN_WIN_RATE_BREAKOUT = 50.0
 DEFAULT_MIN_WIN_RATE_DIP = 55.0
@@ -457,6 +465,7 @@ class RejectionTracker:
             "Rejected (Quality)": 0,
             "Bad Risk/Reward": 0,
             "Earnings Risk": 0,
+            "Gap Risk": 0,  # NEW: Filter for gappy stocks
             "WF Filter": 0,
             "OOS Filter": 0,
             "Regime Filter": 0,
@@ -490,6 +499,280 @@ class TitanSetup:
     sector: str
     earnings_call: str # New field for clarity
     note: str
+    # Advanced AI Fields
+    ml_score: float = 0.0        # ML-based confidence (0-100)
+    options_flow: str = "N/A"    # BULLISH/BEARISH/NEUTRAL
+    sentiment: str = "N/A"       # BULLISH/BEARISH/NEUTRAL
+    ai_boost: float = 0.0        # Total AI score modifier
+
+# -----------------------------------------------------------------------------
+# AI ENHANCEMENT MODULE (Advanced Features)
+# -----------------------------------------------------------------------------
+class AIEnhancer:
+    """
+    Advanced AI features for signal enhancement:
+    1. ML Signal Filtering (Random Forest-like scoring)
+    2. Options Flow Detection (put/call ratio analysis)
+    3. News Sentiment Analysis (RSS/headline scanning)
+    """
+    
+    def __init__(self):
+        self.sentiment_cache = {}  # Cache sentiment results
+        self._session = None
+    
+    @property
+    def session(self):
+        if self._session is None:
+            self._session = requests.Session()
+            self._session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+        return self._session
+    
+    # -------------------------------------------------------------------------
+    # 1. ML SIGNAL FILTER (Feature-based scoring)
+    # -------------------------------------------------------------------------
+    def ml_score(self, df, backtest_res):
+        """
+        ML-style signal scoring using handcrafted features.
+        Returns: Score 0-100 (higher = better trade probability)
+        
+        Features used:
+        - Backtest win rate
+        - Profit factor
+        - Trend strength (SMA alignment)
+        - Volume confirmation
+        - Volatility regime
+        - Momentum indicators
+        """
+        if len(df) < 60:
+            return 50.0
+        
+        score = 0
+        
+        # Feature 1: Backtest Quality (0-25 points)
+        wr = backtest_res.get('win_rate', 50)
+        pf = backtest_res.get('pf', 1.0)
+        score += min(15, (wr - 50) * 0.5)  # +15 for 80% WR
+        score += min(10, (pf - 1.0) * 5)    # +10 for PF 3.0
+        
+        c = df['Close']
+        h = df['High']
+        v = df['Volume']
+        
+        # Feature 2: Trend Strength (0-20 points)
+        sma20 = c.rolling(20).mean().iloc[-1]
+        sma50 = c.rolling(50).mean().iloc[-1]
+        sma200 = c.rolling(200).mean().iloc[-1] if len(df) >= 200 else sma50
+        
+        if c.iloc[-1] > sma20 > sma50 > sma200:
+            score += 20  # Perfect trend alignment
+        elif c.iloc[-1] > sma50 > sma200:
+            score += 12
+        elif c.iloc[-1] > sma200:
+            score += 5
+        
+        # Feature 3: Volume Confirmation (0-15 points)
+        vol_avg = v.rolling(20).mean().iloc[-1]
+        vol_ratio = v.iloc[-1] / (vol_avg + 1e-9)
+        if vol_ratio > 2.0:
+            score += 15  # Strong volume surge
+        elif vol_ratio > 1.5:
+            score += 10
+        elif vol_ratio > 1.0:
+            score += 5
+        
+        # Feature 4: Near High (0-15 points) - Blue Sky territory
+        high_52w = h.iloc[-252:].max() if len(df) >= 252 else h.max()
+        pct_from_high = (c.iloc[-1] / high_52w - 1) * 100
+        if pct_from_high > -2:
+            score += 15  # At new highs
+        elif pct_from_high > -5:
+            score += 10
+        elif pct_from_high > -10:
+            score += 5
+        
+        # Feature 5: Momentum (0-15 points)
+        ret_5d = (c.iloc[-1] / c.iloc[-6] - 1) * 100 if len(df) >= 6 else 0
+        ret_20d = (c.iloc[-1] / c.iloc[-21] - 1) * 100 if len(df) >= 21 else 0
+        
+        if ret_5d > 0 and ret_20d > 0:
+            score += 10
+        if ret_5d > 3:
+            score += 5  # Strong recent momentum
+        
+        # Feature 6: Volatility Squeeze (0-10 points)
+        atr = _atr_series(df).iloc[-1] if len(df) >= 14 else 0
+        atr_pct = atr / c.iloc[-1] if c.iloc[-1] > 0 else 0
+        if 0.01 < atr_pct < 0.03:
+            score += 10  # Goldilocks volatility
+        elif atr_pct < 0.05:
+            score += 5
+        
+        return min(100, max(0, score))
+    
+    # -------------------------------------------------------------------------
+    # 2. OPTIONS FLOW DETECTION
+    # -------------------------------------------------------------------------
+    def get_options_flow(self, ticker):
+        """
+        Analyze put/call ratio and unusual options activity.
+        Returns: "BULLISH", "BEARISH", or "NEUTRAL"
+        
+        Uses Yahoo Finance options data (free).
+        """
+        try:
+            t = yf.Ticker(ticker)
+            
+            # Get nearest expiration
+            expirations = t.options
+            if not expirations:
+                return "NEUTRAL", 0
+            
+            # Use nearest expiration
+            nearest_exp = expirations[0]
+            chain = t.option_chain(nearest_exp)
+            
+            calls = chain.calls
+            puts = chain.puts
+            
+            if calls.empty or puts.empty:
+                return "NEUTRAL", 0
+            
+            # Calculate put/call ratio by volume
+            call_vol = calls['volume'].sum() if 'volume' in calls.columns else 0
+            put_vol = puts['volume'].sum() if 'volume' in puts.columns else 0
+            
+            if call_vol == 0 and put_vol == 0:
+                return "NEUTRAL", 0
+            
+            pc_ratio = put_vol / (call_vol + 1e-9)
+            
+            # Calculate unusual activity score
+            call_oi = calls['openInterest'].sum() if 'openInterest' in calls.columns else 1
+            put_oi = puts['openInterest'].sum() if 'openInterest' in puts.columns else 1
+            
+            # Volume to OI ratio indicates unusual activity
+            call_voi = call_vol / (call_oi + 1e-9)
+            put_voi = put_vol / (put_oi + 1e-9)
+            
+            # Interpret
+            if pc_ratio < 0.5 and call_voi > 0.5:
+                return "BULLISH", min(20, call_voi * 10)
+            elif pc_ratio > 2.0 and put_voi > 0.5:
+                return "BEARISH", -min(20, put_voi * 10)
+            else:
+                return "NEUTRAL", 0
+                
+        except Exception:
+            return "NEUTRAL", 0
+    
+    # -------------------------------------------------------------------------
+    # 3. NEWS SENTIMENT ANALYSIS
+    # -------------------------------------------------------------------------
+    def get_news_sentiment(self, ticker):
+        """
+        Analyze recent news headlines for sentiment.
+        Returns: "BULLISH", "BEARISH", or "NEUTRAL" and score modifier
+        
+        Uses Yahoo Finance news feed (free).
+        """
+        # Check cache first (avoid repeated calls)
+        cache_key = f"{ticker}_{datetime.now().strftime('%Y%m%d%H')}"
+        if cache_key in self.sentiment_cache:
+            return self.sentiment_cache[cache_key]
+        
+        try:
+            t = yf.Ticker(ticker)
+            news = t.news if hasattr(t, 'news') else []
+            
+            if not news:
+                result = ("NEUTRAL", 0)
+                self.sentiment_cache[cache_key] = result
+                return result
+            
+            # Bullish keywords
+            bullish_words = [
+                'surge', 'soar', 'jump', 'bull', 'upgrade', 'beat', 'strong',
+                'record', 'growth', 'rally', 'breakout', 'buy', 'outperform',
+                'profit', 'gain', 'rise', 'up', 'positive', 'boom', 'success'
+            ]
+            
+            # Bearish keywords
+            bearish_words = [
+                'crash', 'fall', 'drop', 'bear', 'downgrade', 'miss', 'weak',
+                'decline', 'loss', 'sell', 'underperform', 'warning', 'concern',
+                'down', 'negative', 'fail', 'risk', 'cut', 'layoff', 'lawsuit'
+            ]
+            
+            bullish_count = 0
+            bearish_count = 0
+            
+            for article in news[:10]:  # Check last 10 articles
+                title = article.get('title', '').lower()
+                
+                for word in bullish_words:
+                    if word in title:
+                        bullish_count += 1
+                        
+                for word in bearish_words:
+                    if word in title:
+                        bearish_count += 1
+            
+            # Determine sentiment
+            net_sentiment = bullish_count - bearish_count
+            
+            if net_sentiment >= 3:
+                result = ("BULLISH", min(15, net_sentiment * 3))
+            elif net_sentiment <= -3:
+                result = ("BEARISH", max(-15, net_sentiment * 3))
+            else:
+                result = ("NEUTRAL", net_sentiment * 2)
+            
+            self.sentiment_cache[cache_key] = result
+            return result
+            
+        except Exception:
+            return ("NEUTRAL", 0)
+    
+    # -------------------------------------------------------------------------
+    # COMBINED AI ANALYSIS
+    # -------------------------------------------------------------------------
+    def analyze(self, ticker, df, backtest_res):
+        """
+        Run all AI analyses and return combined results.
+        """
+        results = {
+            'ml_score': self.ml_score(df, backtest_res),
+            'options_flow': 'N/A',
+            'options_boost': 0,
+            'sentiment': 'N/A', 
+            'sentiment_boost': 0,
+            'ai_boost': 0
+        }
+        
+        # Options Flow (can be slow, only for promising stocks)
+        if results['ml_score'] >= 60:
+            flow, boost = self.get_options_flow(ticker)
+            results['options_flow'] = flow
+            results['options_boost'] = boost
+        
+        # News Sentiment
+        sentiment, s_boost = self.get_news_sentiment(ticker)
+        results['sentiment'] = sentiment
+        results['sentiment_boost'] = s_boost
+        
+        # Calculate total AI boost
+        results['ai_boost'] = (
+            (results['ml_score'] - 50) * 0.2 +  # ML contribution
+            results['options_boost'] +           # Options contribution
+            results['sentiment_boost']           # Sentiment contribution
+        )
+        
+        return results
+
+# Global AI Enhancer instance
+AI_ENHANCER = AIEnhancer()
 
 # -----------------------------------------------------------------------------
 # 1. MARKET REGIME (The "Traffic Light")
@@ -500,7 +783,7 @@ class MarketRegime:
 
     def analyze_spy(self):
         """
-        Analyze SPY to determine market status.
+        Analyze SPY to determine market status with VIX integration.
         BULL: Price > SMA200 & SMA50 > SMA200
         BEAR: Price < SMA200
         NEUTRAL: Choppy
@@ -534,9 +817,27 @@ class MarketRegime:
             else:
                 status = "Correction"
                 score = 0.2
+        
+        # --- VIX INTEGRATION (Pro Trader Secret) ---
+        # High VIX = high fear = reduce exposure
+        vix_scalar = 1.0
+        for vix_key in ["^VIX", "VIX", "VIXY"]:
+            if vix_key in self.data:
+                try:
+                    vix_df = self.data[vix_key]
+                    if isinstance(vix_df, pd.DataFrame) and 'Close' in vix_df.columns:
+                        vix = float(vix_df['Close'].iloc[-1])
+                        if vix > VIX_EXTREME_THRESHOLD:
+                            vix_scalar = 0.3  # Extreme fear - cut exposure 70%
+                            status = f"{status}+FEAR"
+                        elif vix > VIX_HIGH_THRESHOLD:
+                            vix_scalar = 0.6  # High fear - cut exposure 40%
+                            status = f"{status}+CAUTION"
+                        break
+                except Exception:
+                    pass
                 
-        # VIX Check (Optional if available, simplified here)
-        return status, score
+        return status, score * vix_scalar
 
 # -----------------------------------------------------------------------------
 # 2. VALIDATOR ENGINE (The "Reality Check")
@@ -549,6 +850,126 @@ class StrategyValidator:
     def __init__(self, df):
         self.df = df
     
+    def volatility_squeeze(self, bb_period=20, kc_period=20, kc_mult=1.5):
+        """
+        Detect volatility squeeze (Bollinger bands inside Keltner channels).
+        This is the #1 secret of professional breakout traders.
+        Returns: Series of True where squeeze is active.
+        """
+        df = self.df
+        close = df['Close']
+        
+        # Bollinger Bands
+        bb_mid = close.rolling(bb_period).mean()
+        bb_std = close.rolling(bb_period).std()
+        bb_upper = bb_mid + 2 * bb_std
+        bb_lower = bb_mid - 2 * bb_std
+        
+        # Keltner Channels
+        atr = _atr_series(df, kc_period)
+        kc_mid = close.rolling(kc_period).mean()
+        kc_upper = kc_mid + kc_mult * atr
+        kc_lower = kc_mid - kc_mult * atr
+        
+        # Squeeze = BB inside KC (volatility is compressed)
+        squeeze = (bb_lower > kc_lower) & (bb_upper < kc_upper)
+        return squeeze
+    
+    def check_gap_risk(self, max_gap_pct=MAX_GAP_PCT, lookback=60):
+        """
+        Filter out stocks with history of large overnight gaps.
+        These will blow past your stop loss.
+        Returns: True if stock is SAFE (few large gaps), False if risky.
+        """
+        df = self.df
+        if len(df) < lookback + 1:
+            return True  # Not enough data, assume safe
+        
+        opens = df['Open'].iloc[-lookback:]
+        prev_close = df['Close'].shift(1).iloc[-lookback:]
+        gaps = abs(opens - prev_close) / (prev_close + 1e-9)
+        
+        # If stock has had >3 large gaps in last 60 days, it's risky
+        large_gap_count = (gaps > max_gap_pct).sum()
+        return large_gap_count <= 3
+    
+    def relative_strength_vs_spy(self, spy_df, lookback=60):
+        """
+        Calculate Relative Strength vs SPY (Pro Trader Secret).
+        Only trade stocks that are OUTPERFORMING the market.
+        Returns: RS Score (0-100), >50 means stock is outperforming SPY.
+        """
+        if len(self.df) < lookback or len(spy_df) < lookback:
+            return 50.0  # Neutral if not enough data
+        
+        stock_ret = (self.df['Close'].iloc[-1] / self.df['Close'].iloc[-lookback] - 1) * 100
+        spy_ret = (spy_df['Close'].iloc[-1] / spy_df['Close'].iloc[-lookback] - 1) * 100
+        
+        # RS = outperformance vs SPY
+        rs_diff = stock_ret - spy_ret
+        
+        # Convert to 0-100 scale (centered at 50)
+        # +10% outperformance = 100, -10% underperformance = 0
+        rs_score = max(0, min(100, 50 + (rs_diff * 5)))
+        return rs_score
+    
+    def is_blue_sky_breakout(self, lookback=252):
+        """
+        Detect Blue Sky Breakout (Pro Trader Secret).
+        Stock near all-time high = less resistance overhead = easier upside.
+        Returns: True if price is within 5% of 52-week high.
+        """
+        if len(self.df) < lookback:
+            return False
+        
+        high_52w = self.df['High'].iloc[-lookback:].max()
+        current = self.df['Close'].iloc[-1]
+        
+        # Within 5% of 52-week high = blue sky
+        return current >= high_52w * 0.95
+    
+    def momentum_score(self, spy_df=None):
+        """
+        Calculate Momentum Score (0-100) combining multiple factors.
+        Higher = stronger momentum = better trade probability.
+        """
+        score = 50  # Start neutral
+        
+        if len(self.df) < 60:
+            return score
+        
+        c = self.df['Close']
+        
+        # Factor 1: Price vs SMA20 (+10)
+        sma20 = c.rolling(20).mean().iloc[-1]
+        if c.iloc[-1] > sma20:
+            score += 10
+        
+        # Factor 2: Price vs SMA50 (+10)
+        sma50 = c.rolling(50).mean().iloc[-1]
+        if c.iloc[-1] > sma50:
+            score += 10
+        
+        # Factor 3: SMA20 > SMA50 (trend confirmation) (+10)
+        if sma20 > sma50:
+            score += 10
+        
+        # Factor 4: Volume surge (current vol > 1.5x avg) (+10)
+        vol_avg = self.df['Volume'].rolling(20).mean().iloc[-1]
+        if self.df['Volume'].iloc[-1] > vol_avg * 1.5:
+            score += 10
+        
+        # Factor 5: Blue sky breakout (+10)
+        if self.is_blue_sky_breakout():
+            score += 10
+        
+        # Factor 6: RS vs SPY (if available) (+0 to +10)
+        if spy_df is not None:
+            rs = self.relative_strength_vs_spy(spy_df)
+            score += (rs - 50) / 5  # +10 for RS=100, -10 for RS=0
+        
+        return min(100, max(0, score))
+    
     def _calculate_rsi(self, series, period=14):
         delta = series.diff()
         gain = delta.where(delta > 0, 0).rolling(period).mean()
@@ -556,19 +977,28 @@ class StrategyValidator:
         rs = gain / (loss + 1e-9)
         return 100 - (100 / (1 + rs))
 
-    def _simulate_trade(self, entry, stop, target, ohlc_data, start_idx, max_hold=8, trail_risk=None, trail_r1=1.0, trail_r2=2.0):
-        """Simulate a trade with optional trailing stop based on R (risk)."""
+    def _simulate_trade(self, entry, stop, target, ohlc_data, start_idx, max_hold=8, trail_risk=None, trail_r1=1.0, trail_r2=2.0, trail_r3=3.0):
+        """Simulate a trade with 3-tier trailing stop (Pro Trader Secret)."""
         closes, highs, lows = ohlc_data
         stop_curr = stop
+        highest_since_entry = entry  # Track highest price for trailing
         end_idx = min(start_idx + max_hold, len(closes))
 
         for j in range(start_idx, end_idx):
-            # Optional trailing logic (lock in after 1R and 2R)
+            # Update highest price since entry
+            highest_since_entry = max(highest_since_entry, highs[j])
+            
+            # 3-Tier Trailing Stop Logic (Pro Trader Secret)
             if trail_risk is not None and trail_risk > 0:
-                if highs[j] >= entry + (trail_risk * trail_r1):
+                # Tier 1: Move to breakeven at 1R
+                if highest_since_entry >= entry + (trail_risk * trail_r1):
                     stop_curr = max(stop_curr, entry)  # breakeven
-                if highs[j] >= entry + (trail_risk * trail_r2):
+                # Tier 2: Lock 1R at 2R profit
+                if highest_since_entry >= entry + (trail_risk * trail_r2):
                     stop_curr = max(stop_curr, entry + trail_risk)  # lock 1R
+                # Tier 3: Lock 2R at 3R profit (NEW!)
+                if highest_since_entry >= entry + (trail_risk * trail_r3):
+                    stop_curr = max(stop_curr, entry + trail_risk * 2)  # lock 2R
 
             # Conservative: check stop first
             if lows[j] <= stop_curr:
@@ -1279,6 +1709,10 @@ class TitanBrain:
             val = StrategyValidator(df)
             opt = Optimizer(val)
             
+            # --- GAP PROTECTION FILTER (Pro Trader Secret) ---
+            if GAP_PROTECTION and not val.check_gap_risk():
+                return None, "Gap Risk", None
+            
             final_res = None
             strategy_name = ""
             trigger = 0
@@ -1311,7 +1745,8 @@ class TitanBrain:
                     res["expectancy"] = _expectancy(res.get("trades_list", []))
 
                 tgt_mult = params.get('target_mult', 3.5)
-                trigger = float(df['High'][-15:].max()) + 0.02
+                # FIX LOOKAHEAD BIAS: Exclude today's high from pivot calculation
+                trigger = float(df['High'].iloc[-16:-1].max()) + 0.02
                 stop = trigger - (atr * 2)
                 target = trigger + (atr * tgt_mult)
                 candidate_strategy = "BREAKOUT"
@@ -1535,13 +1970,27 @@ class TitanBrain:
             score = final_res['win_rate'] + (final_res['pf'] * 10)
             if mkt_status == "BULL": score += 10
             
+            # --- KELLY CRITERION FIX (Pro Trader Secret) ---
+            # Use actual win/loss ratio from backtest, not hardcoded R=2.0
             W = final_res['win_rate'] / 100
-            R = 2.0 
-            kelly = (W - (1-W)/R) * 0.5
-            if kelly < 0: kelly = 0
+            trades_list = final_res.get('trades_list', [])
+            if trades_list:
+                wins = [t for t in trades_list if t > 0]
+                losses = [t for t in trades_list if t <= 0]
+                avg_win = abs(np.mean(wins)) if wins else 0.02
+                avg_loss = abs(np.mean(losses)) if losses else 0.01
+            else:
+                avg_win = 0.02
+                avg_loss = 0.01
+            R = avg_win / (avg_loss + 1e-9)  # Actual win/loss ratio
+            kelly = max(0, (W * R - (1 - W)) / R) * 0.25  # Quarter-Kelly (safer)
             
-            risk_amt = min(self.risk_per_trade, self.account_size * 0.01)
-            shares = int(risk_amt / (trigger - stop)) if (trigger - stop) > 0 else 0
+            # --- VOLATILITY-ADJUSTED POSITION SIZING (Pro Trader Secret) ---
+            # Reduce position size for volatile stocks
+            atr_pct = atr / c if c > 0 else 0.02
+            vol_scalar = min(1.0, 0.025 / (atr_pct + 1e-9))  # Reduce size for volatile stocks
+            risk_amt = min(self.risk_per_trade * vol_scalar, self.account_size * 0.01)
+            shares = max(1, int(risk_amt / (trigger - stop))) if (trigger - stop) > 0 else 0
             
             # --- SUPER POWER 1: INFO CHECK ---
             earnings_call = "Unknown"
@@ -1643,10 +2092,36 @@ class TitanBrain:
                 note_str += f" | Reg:{regime_score:.2f}"
             if rr_ratio >= 3.0: note_str += " | 3R+ GEM"
             
+            # --- AI ENHANCEMENT (ML, Options Flow, Sentiment) ---
+            ai_results = AI_ENHANCER.analyze(t, df, final_res)
+            ml_score = ai_results['ml_score']
+            options_flow = ai_results['options_flow']
+            sentiment = ai_results['sentiment']
+            ai_boost = ai_results['ai_boost']
+            
+            # Boost score with AI results
+            score += ai_boost
+            
+            # Add AI info to note
+            if ml_score >= 70:
+                note_str += f" | ML:{ml_score:.0f}🔥"
+            elif ml_score >= 60:
+                note_str += f" | ML:{ml_score:.0f}"
+            
+            if options_flow == "BULLISH":
+                note_str += " | Opts:📈"
+            elif options_flow == "BEARISH":
+                note_str += " | Opts:📉"
+            
+            if sentiment == "BULLISH":
+                note_str += " | News:📰+"
+            elif sentiment == "BEARISH":
+                note_str += " | News:📰-"
+            
             return TitanSetup(
                 t, strategy_name, c, trigger, stop, target, shares,
                 final_res['win_rate'], final_res['pf'], kelly*100, score, sector, 
-                earnings_call, note_str
+                earnings_call, note_str, ml_score, options_flow, sentiment, ai_boost
             ), "Passed", None
 
         except Exception:
@@ -1756,7 +2231,33 @@ class TitanBrain:
             near_misses.sort(key=_miss_score)
             near_misses = near_misses[: max(1, int(near_miss_top))]
 
+        # --- SECTOR CORRELATION LIMIT (Pro Trader Secret) ---
+        # Never bet the farm on one sector
+        if results:
+            results = self._apply_sector_limits(results)
+            
         return results, tracker.summary(), near_misses
+    
+    def _apply_sector_limits(self, setups, max_per_sector=MAX_SECTOR_EXPOSURE, max_total=MAX_POSITIONS):
+        """Limit same-sector exposure and cap total positions."""
+        sector_count = {}
+        filtered = []
+        
+        # Sort by score first (take best setups)
+        setups_sorted = sorted(setups, key=lambda x: x.score, reverse=True)
+        
+        for s in setups_sorted:
+            if len(filtered) >= max_total:
+                break  # Already have enough positions
+            
+            sector = s.sector or 'Unknown'
+            if sector_count.get(sector, 0) >= max_per_sector:
+                continue  # Skip, already have max in this sector
+            
+            sector_count[sector] = sector_count.get(sector, 0) + 1
+            filtered.append(s)
+        
+        return filtered
 
 def addToPortfolio(setups):
     """Interactive loop to add trades to portfolio."""
@@ -1819,8 +2320,11 @@ def addToPortfolio(setups):
 
 
 def main():
+    # Default config file - no need for --config flag anymore
+    DEFAULT_CONFIG = "titan_config.json"
+    
     pre_parser = argparse.ArgumentParser(add_help=False)
-    pre_parser.add_argument("--config", default=None)
+    pre_parser.add_argument("--config", default=DEFAULT_CONFIG)
     pre_args, remaining = pre_parser.parse_known_args()
 
     parser = argparse.ArgumentParser(description="Run Titan Trade scan.")
