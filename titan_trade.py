@@ -11,10 +11,33 @@ import subprocess
 import sys
 import logging
 import math
+import threading
 from datetime import datetime, timedelta, date
 from dataclasses import dataclass
 from tabulate import tabulate
 import io
+
+# Optional imports for enhanced features
+try:
+    import pytz
+    HAS_PYTZ = True
+except ImportError:
+    HAS_PYTZ = False
+    
+try:
+    from plyer import notification
+    HAS_PLYER = True
+except ImportError:
+    HAS_PLYER = False
+
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # Non-interactive backend
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
 
 # Disable warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -25,8 +48,36 @@ CACHE_DIR = "cache_sp500_elite"
 SP500_CACHE_FILE = os.path.join(CACHE_DIR, "sp500_tickers.json")
 OHLCV_CACHE_FILE = os.path.join(CACHE_DIR, "sp500_ohlcv_bulk.parquet")
 PORTFOLIO_FILE = "portfolio.json"
+TRADE_LOG_FILE = "trade_log.json"
+RISK_LOG_FILE = "risk_log.json"
+PRE_TRADE_CHECKLIST_FILE = "pre_trade_checklist.json"
+SIGNAL_TRACKER_FILE = "signal_tracker.json"
+PAPER_TRADE_FILE = "paper_trades.json"
 DEFAULT_SP500_TTL_DAYS = 7
-DEFAULT_OHLCV_TTL_HOURS = 12
+
+# =============================================================================
+# DATA FRESHNESS - Critical for real trading
+# =============================================================================
+# For REAL trading, data must be fresh. yfinance has ~15min delay.
+# Set this to 0.5 (30 minutes) for real trading, or use a real-time data source
+DEFAULT_OHLCV_TTL_HOURS = 0.5  # 30 minutes for production (was 12 hours)
+MAX_DATA_AGE_MINUTES = 30  # Warn if data older than this
+
+# =============================================================================
+# LIQUIDITY REQUIREMENTS - Don't trade illiquid stocks
+# =============================================================================
+MIN_AVG_DOLLAR_VOLUME = 10_000_000  # $10M daily volume minimum
+MIN_AVG_VOLUME = 500_000  # 500K shares minimum
+MAX_POSITION_PCT_OF_VOLUME = 1.0  # Never be more than 1% of daily volume
+
+# =============================================================================
+# REALISTIC SLIPPAGE MODEL - Based on order size vs volume
+# =============================================================================
+# Slippage increases as your order becomes larger relative to volume
+# Base slippage + (position_size / avg_volume) * volume_impact_factor
+BASE_SLIPPAGE_BREAKOUT_BPS = 20.0  # Base 0.20%
+BASE_SLIPPAGE_DIP_BPS = 10.0  # Base 0.10%
+VOLUME_IMPACT_FACTOR = 50.0  # Additional bps per 1% of volume
 DEFAULT_DATA_PERIOD = "5y"
 DEFAULT_DATA_INTERVAL = "1d"
 DEFAULT_OUTPUT_DIR = "."
@@ -37,88 +88,819 @@ DEFAULT_MAX_WORKERS = max(2, min(12, (os.cpu_count() or 4)))
 DEFAULT_NEAR_MISS_REPORT = True
 DEFAULT_NEAR_MISS_TOP = 50
 
-DEFAULT_CONFIRM_DAYS_BREAKOUT = 2
-DEFAULT_CONFIRM_DAYS_DIP = 2
+DEFAULT_CONFIRM_DAYS_BREAKOUT = 3
+DEFAULT_CONFIRM_DAYS_DIP = 3
 DEFAULT_REQUIRE_CONFIRMED_SETUP = True
 DEFAULT_REGIME_FACTORS = {
     "BULL": 1.0,
-    "RECOVERY": 1.05,
-    "NEUTRAL": 1.1,
-    "Correction": 1.15,
-    "BEAR": 1.25,
+    "RECOVERY": 1.1,
+    "NEUTRAL": 1.2,
+    "Correction": 1.4,
+    "BEAR": 2.0,  # Double requirements in bear market
 }
 
-DEFAULT_REQUIRE_OOS = False
-DEFAULT_OOS_MIN_TRADES = 5
+DEFAULT_REQUIRE_OOS = True  # Always require OOS validation
+DEFAULT_OOS_MIN_TRADES = 10
 DEFAULT_OOS_MIN_WINRATE_BREAKOUT = 55.0
 DEFAULT_OOS_MIN_WINRATE_DIP = 52.0
-DEFAULT_OOS_MIN_PF_BREAKOUT = 1.2
-DEFAULT_OOS_MIN_PF_DIP = 1.1
-DEFAULT_OOS_MIN_EXPECTANCY_BREAKOUT = 0.0
-DEFAULT_OOS_MIN_EXPECTANCY_DIP = 0.0
+DEFAULT_OOS_MIN_PF_BREAKOUT = 1.3
+DEFAULT_OOS_MIN_PF_DIP = 1.2
+DEFAULT_OOS_MIN_EXPECTANCY_BREAKOUT = 0.002
+DEFAULT_OOS_MIN_EXPECTANCY_DIP = 0.001
 
-SAFE_MODE_DEFAULT = True
+# =============================================================================
+# SAFE MODE DEFAULTS - Balanced between safety and practicality
+# =============================================================================
+SAFE_MODE_DEFAULT = False  # Start with balanced mode, not overly strict
 SAFE_MODE_SETTINGS = {
     "require_walkforward": True,
-    "require_oos": True,
-    "confirm_days_breakout": 3,
-    "confirm_days_dip": 3,
+    "require_oos": False,  # OOS is nice but not required
+    "confirm_days_breakout": 2,
+    "confirm_days_dip": 2,
     "require_confirmed_setup": True,
-    "min_winrate_breakout": 60.0,
-    "min_winrate_dip": 55.0,
-    "min_pf_breakout": 1.8,
-    "min_pf_dip": 1.3,
-    "min_trades_breakout": 5,  # Reduced from 8 for more signals
-    "min_trades_dip": 6,  # Reduced from 10 for more signals
-    "min_expectancy_breakout": 0.001,
-    "min_expectancy_dip": 0.0005,
-    "min_rr_breakout": 1.8,  # Reduced from 2.2 for more signals
-    "min_rr_dip": 1.4,  # Reduced from 1.6 for more signals
-    "wf_min_trades": 3,
-    "wf_min_pf": 1.2,
+    # REALISTIC: 10-15 trades is acceptable for individual stock analysis
+    # Portfolio diversification provides additional statistical confidence
+    "min_trades_breakout": 12,
+    "min_trades_dip": 12,
+    # Win rate requirements (realistic)
+    "min_winrate_breakout": 50.0,
+    "min_winrate_dip": 48.0,
+    # Profit factor (must be profitable after costs)
+    "min_pf_breakout": 1.3,
+    "min_pf_dip": 1.2,
+    # Expectancy per trade
+    "min_expectancy_breakout": 0.002,
+    "min_expectancy_dip": 0.001,
+    # Risk/reward
+    "min_rr_breakout": 1.5,
+    "min_rr_dip": 1.3,
+    # Walk-forward validation
+    "wf_min_trades": 8,
+    "wf_min_pf": 1.1,
     "wf_min_expectancy": 0.0,
-    "wf_min_passrate": 0.0,
+    "wf_min_passrate": 0.25,  # Must pass 25% of folds (at least 1 of 4)
+    # OOS validation (when enabled)
     "oos_min_trades": 5,
-    "oos_min_winrate_breakout": 55.0,
-    "oos_min_winrate_dip": 52.0,
-    "oos_min_pf_breakout": 1.3,
-    "oos_min_pf_dip": 1.2,
+    "oos_min_winrate_breakout": 48.0,
+    "oos_min_winrate_dip": 45.0,
+    "oos_min_pf_breakout": 1.1,
+    "oos_min_pf_dip": 1.0,
     "oos_min_expectancy_breakout": 0.0,
     "oos_min_expectancy_dip": 0.0,
 }
 
-# Strategy Defaults
-RISK_PER_TRADE = 1000.0  # $1000 Risk per trade
+# =============================================================================
+# POSITION SIZING & RISK MANAGEMENT
+# =============================================================================
+RISK_PER_TRADE = 500.0  # Conservative: $500 max risk per trade
 ACCOUNT_SIZE = 100000.0
+MAX_RISK_PCT_PER_TRADE = 0.5  # Never risk more than 0.5% per trade
 
-# Pro Trader Settings (New)
-MAX_POSITIONS = 8  # Maximum concurrent positions
-MAX_SECTOR_EXPOSURE = 3  # Max stocks per sector
-VIX_HIGH_THRESHOLD = 25  # Reduce size when VIX > this
-VIX_EXTREME_THRESHOLD = 30  # Cut size 50% when VIX > this
-GAP_PROTECTION = True  # Filter stocks with large overnight gaps
-MAX_GAP_PCT = 0.05  # 5% max gap history allowed
+# Portfolio-level risk controls (CRITICAL for survival)
+MAX_POSITIONS = 6  # Maximum concurrent positions
+MAX_SECTOR_EXPOSURE = 3  # Max stocks per sector (increased for tracking)
+MAX_DAILY_LOSS_PCT = 2.0  # Stop trading if down 2% in a day
+MAX_WEEKLY_LOSS_PCT = 5.0  # Stop trading if down 5% in a week
+MAX_DRAWDOWN_PCT = 15.0  # Pause all trading if drawdown exceeds 15%
+PORTFOLIO_HEAT_MAX = 6.0  # Max total portfolio risk (% of account)
 
-# Quality Filters (defaults preserve current behavior)
+# VIX-based position sizing
+VIX_HIGH_THRESHOLD = 22  # Reduce size when VIX > this
+VIX_EXTREME_THRESHOLD = 28  # Cut size 50% when VIX > this
+VIX_PANIC_THRESHOLD = 35  # No new positions when VIX > this
+
+# Gap and execution protection
+GAP_PROTECTION = True
+MAX_GAP_PCT = 0.04  # 4% max gap history allowed (stricter)
+
+# =============================================================================
+# REALISTIC SLIPPAGE MODEL
+# =============================================================================
+# Breakouts have high slippage due to momentum chasers
+DEFAULT_SLIPPAGE_BREAKOUT_BPS = 30.0  # 0.30% slippage for breakouts
+DEFAULT_SLIPPAGE_DIP_BPS = 10.0  # 0.10% slippage for dips (less crowded)
+DEFAULT_COMMISSION_BPS = 5.0  # $5 per $10k traded
+
+# Quality Filters (balanced defaults)
 DEFAULT_MIN_WIN_RATE_BREAKOUT = 50.0
-DEFAULT_MIN_WIN_RATE_DIP = 55.0
-DEFAULT_MIN_PF_BREAKOUT = 1.2
-DEFAULT_MIN_PF_DIP = 0.0
-DEFAULT_MIN_TRADES_BREAKOUT = 0
-DEFAULT_MIN_TRADES_DIP = 0
-DEFAULT_MIN_EXPECTANCY_BREAKOUT = None
-DEFAULT_MIN_EXPECTANCY_DIP = None
-DEFAULT_MIN_RR_BREAKOUT = 1.8
-DEFAULT_MIN_RR_DIP = 1.4
+DEFAULT_MIN_WIN_RATE_DIP = 48.0
+DEFAULT_MIN_PF_BREAKOUT = 1.3
+DEFAULT_MIN_PF_DIP = 1.2
+DEFAULT_MIN_TRADES_BREAKOUT = 10  # Realistic for individual stocks
+DEFAULT_MIN_TRADES_DIP = 10  # Realistic for individual stocks
+DEFAULT_MIN_EXPECTANCY_BREAKOUT = 0.002
+DEFAULT_MIN_EXPECTANCY_DIP = 0.001
+DEFAULT_MIN_RR_BREAKOUT = 1.5
+DEFAULT_MIN_RR_DIP = 1.3
 
 # Walk-forward filters (backtest_titan_results.csv)
-WF_MIN_TRADES = 5
-WF_MIN_PF = 1.2
+WF_MIN_TRADES = 8
+WF_MIN_PF = 1.1
 WF_MIN_EXPECTANCY = 0.0
-WF_MIN_PASSRATE = 0.6
-REGIME_MIN_SCORE = 0.6
+WF_MIN_PASSRATE = 0.25  # Pass at least 1 of 4 folds
+REGIME_MIN_SCORE = 0.5  # Must work in half of regimes
 EARNINGS_BLACKOUT_DAYS = 7
 EARNINGS_POST_DAYS = 1
+
+# =============================================================================
+# MARKET HOURS & AUTO-REFRESH
+# =============================================================================
+MARKET_OPEN_HOUR = 9
+MARKET_OPEN_MINUTE = 30
+MARKET_CLOSE_HOUR = 16
+MARKET_CLOSE_MINUTE = 0
+MARKET_TIMEZONE = "America/New_York"
+AUTO_REFRESH_DURING_MARKET_HOURS = True  # Smart refresh when market is open
+
+# =============================================================================
+# NOTIFICATIONS
+# =============================================================================
+NOTIFICATIONS_ENABLED = True
+NOTIFICATION_ON_NEW_SIGNAL = True
+NOTIFICATION_ON_STOP_HIT = True
+NOTIFICATION_ON_TARGET_HIT = True
+
+# =============================================================================
+# SECTOR MAPPING (GICS Sectors)
+# =============================================================================
+SECTOR_CACHE_FILE = os.path.join(CACHE_DIR, "sector_cache.json")
+SECTOR_CACHE_TTL_DAYS = 30  # Refresh sector info monthly
+
+# =============================================================================
+# SCHEDULED SCANNING
+# =============================================================================
+SCHEDULE_MARKET_OPEN_DELAY_MINUTES = 5  # Run 5 min after market open
+SCHEDULE_MARKET_CLOSE_BEFORE_MINUTES = 5  # Run 5 min before market close
+
+# =============================================================================
+# PERFORMANCE DASHBOARD
+# =============================================================================
+DASHBOARD_FILE = "performance_dashboard.png"
+DASHBOARD_HISTORY_DAYS = 90  # Show last 90 days of performance
+
+
+# =============================================================================
+# MARKET HOURS UTILITIES
+# =============================================================================
+class MarketHours:
+    """Utilities for checking market hours and smart refresh."""
+    
+    @staticmethod
+    def get_eastern_time():
+        """Get current time in Eastern timezone."""
+        if HAS_PYTZ:
+            eastern = pytz.timezone(MARKET_TIMEZONE)
+            return datetime.now(eastern)
+        else:
+            # Fallback: assume running in US Eastern or close to it
+            # This is a rough approximation
+            return datetime.now()
+    
+    @staticmethod
+    def is_market_open():
+        """Check if US stock market is currently open."""
+        now = MarketHours.get_eastern_time()
+        
+        # Check if weekend
+        if now.weekday() >= 5:  # Saturday=5, Sunday=6
+            return False
+        
+        # Check market hours (9:30 AM - 4:00 PM ET)
+        market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+        market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
+        
+        return market_open <= now <= market_close
+    
+    @staticmethod
+    def is_pre_market():
+        """Check if in pre-market hours (4:00 AM - 9:30 AM ET)."""
+        now = MarketHours.get_eastern_time()
+        if now.weekday() >= 5:
+            return False
+        pre_market_start = now.replace(hour=4, minute=0, second=0, microsecond=0)
+        market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+        return pre_market_start <= now < market_open
+    
+    @staticmethod
+    def is_after_hours():
+        """Check if in after-hours (4:00 PM - 8:00 PM ET)."""
+        now = MarketHours.get_eastern_time()
+        if now.weekday() >= 5:
+            return False
+        market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
+        after_hours_end = now.replace(hour=20, minute=0, second=0, microsecond=0)
+        return market_close < now <= after_hours_end
+    
+    @staticmethod
+    def should_auto_refresh(cache_file, ttl_hours=0.5):
+        """
+        Determine if data should be auto-refreshed.
+        During market hours, refresh if data is older than ttl.
+        Outside market hours, use cached data.
+        """
+        if not AUTO_REFRESH_DURING_MARKET_HOURS:
+            return False
+        
+        if not os.path.exists(cache_file):
+            return True
+        
+        # During market hours, be more aggressive about refreshing
+        if MarketHours.is_market_open():
+            cache_age_seconds = time.time() - os.path.getmtime(cache_file)
+            cache_age_hours = cache_age_seconds / 3600
+            return cache_age_hours >= ttl_hours
+        
+        return False
+    
+    @staticmethod
+    def get_market_status_string():
+        """Get human-readable market status."""
+        if MarketHours.is_market_open():
+            return "OPEN"
+        elif MarketHours.is_pre_market():
+            return "PRE-MARKET"
+        elif MarketHours.is_after_hours():
+            return "AFTER-HOURS"
+        else:
+            return "CLOSED"
+    
+    @staticmethod
+    def time_until_market_open():
+        """Get timedelta until next market open."""
+        now = MarketHours.get_eastern_time()
+        
+        # Find next market open
+        next_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+        
+        if now >= next_open:
+            # Already past open time today, try tomorrow
+            next_open += timedelta(days=1)
+        
+        # Skip weekends
+        while next_open.weekday() >= 5:
+            next_open += timedelta(days=1)
+        
+        return next_open - now
+
+
+# =============================================================================
+# NOTIFICATION SYSTEM
+# =============================================================================
+class NotificationManager:
+    """Cross-platform desktop notifications."""
+    
+    @staticmethod
+    def send(title, message, timeout=10):
+        """Send a desktop notification."""
+        if not NOTIFICATIONS_ENABLED:
+            return False
+        
+        try:
+            if HAS_PLYER:
+                notification.notify(
+                    title=title,
+                    message=message,
+                    app_name="Titan Trade",
+                    timeout=timeout
+                )
+                return True
+            else:
+                # Fallback: Windows toast notification via PowerShell
+                if sys.platform == 'win32':
+                    try:
+                        ps_script = f'''
+                        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+                        $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+                        $textNodes = $template.GetElementsByTagName("text")
+                        $textNodes.Item(0).AppendChild($template.CreateTextNode("{title}")) | Out-Null
+                        $textNodes.Item(1).AppendChild($template.CreateTextNode("{message}")) | Out-Null
+                        $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
+                        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Titan Trade").Show($toast)
+                        '''
+                        subprocess.run(['powershell', '-Command', ps_script], 
+                                      capture_output=True, timeout=5)
+                        return True
+                    except Exception:
+                        pass
+                
+                # Fallback: just print to console
+                print(f"\n🔔 {title}: {message}\n")
+                return True
+        except Exception as e:
+            print(f"Notification failed: {e}")
+            return False
+    
+    @staticmethod
+    def notify_new_signal(ticker, strategy, win_rate, profit_factor):
+        """Notify about a new trading signal."""
+        if NOTIFICATION_ON_NEW_SIGNAL:
+            NotificationManager.send(
+                f"New Signal: {ticker}",
+                f"{strategy} | WR: {win_rate:.0f}% | PF: {profit_factor:.2f}"
+            )
+    
+    @staticmethod
+    def notify_stop_hit(ticker, entry_price, exit_price, pnl_pct):
+        """Notify when a stop is hit."""
+        if NOTIFICATION_ON_STOP_HIT:
+            NotificationManager.send(
+                f"STOP HIT: {ticker}",
+                f"Entry: ${entry_price:.2f} → Exit: ${exit_price:.2f} ({pnl_pct:+.1f}%)"
+            )
+    
+    @staticmethod
+    def notify_target_hit(ticker, entry_price, exit_price, pnl_pct):
+        """Notify when target is hit."""
+        if NOTIFICATION_ON_TARGET_HIT:
+            NotificationManager.send(
+                f"TARGET HIT: {ticker}",
+                f"Entry: ${entry_price:.2f} → Exit: ${exit_price:.2f} ({pnl_pct:+.1f}%)"
+            )
+
+
+# =============================================================================
+# SECTOR DETECTION
+# =============================================================================
+class SectorMapper:
+    """Get and cache sector information for tickers."""
+    
+    _cache = None
+    _cache_loaded = False
+    
+    @classmethod
+    def _load_cache(cls):
+        """Load sector cache from file."""
+        if cls._cache_loaded:
+            return
+        
+        cls._cache = {}
+        if os.path.exists(SECTOR_CACHE_FILE):
+            try:
+                cache_age_days = (time.time() - os.path.getmtime(SECTOR_CACHE_FILE)) / 86400
+                if cache_age_days < SECTOR_CACHE_TTL_DAYS:
+                    with open(SECTOR_CACHE_FILE, 'r') as f:
+                        cls._cache = json.load(f)
+            except Exception:
+                pass
+        cls._cache_loaded = True
+    
+    @classmethod
+    def _save_cache(cls):
+        """Save sector cache to file."""
+        try:
+            os.makedirs(os.path.dirname(SECTOR_CACHE_FILE), exist_ok=True)
+            with open(SECTOR_CACHE_FILE, 'w') as f:
+                json.dump(cls._cache, f)
+        except Exception:
+            pass
+    
+    @classmethod
+    def get_sector(cls, ticker):
+        """Get sector for a single ticker."""
+        cls._load_cache()
+        
+        if ticker in cls._cache:
+            return cls._cache[ticker]
+        
+        # Fetch from yfinance
+        try:
+            info = yf.Ticker(ticker).info
+            sector = info.get('sector', 'Unknown')
+            if sector:
+                cls._cache[ticker] = sector
+                cls._save_cache()
+                return sector
+        except Exception:
+            pass
+        
+        return 'Unknown'
+    
+    @classmethod
+    def get_sectors_batch(cls, tickers, max_fetch=50):
+        """Get sectors for multiple tickers (with rate limiting)."""
+        cls._load_cache()
+        
+        result = {}
+        to_fetch = []
+        
+        # Check cache first
+        for ticker in tickers:
+            if ticker in cls._cache:
+                result[ticker] = cls._cache[ticker]
+            else:
+                to_fetch.append(ticker)
+        
+        # Fetch missing (limit to avoid rate limits)
+        for ticker in to_fetch[:max_fetch]:
+            try:
+                info = yf.Ticker(ticker).info
+                sector = info.get('sector', 'Unknown')
+                cls._cache[ticker] = sector
+                result[ticker] = sector
+                time.sleep(0.1)  # Rate limit
+            except Exception:
+                result[ticker] = 'Unknown'
+        
+        cls._save_cache()
+        return result
+
+
+# =============================================================================
+# EARNINGS CALENDAR
+# =============================================================================
+class EarningsCalendar:
+    """Check earnings dates for stocks."""
+    
+    _cache = {}
+    
+    @classmethod
+    def get_earnings_date(cls, ticker):
+        """
+        Get next earnings date for a ticker.
+        Returns: (earnings_date, days_until) or (None, None) if not found
+        """
+        if ticker in cls._cache:
+            cached = cls._cache[ticker]
+            # Check if cache is still valid (less than 1 day old)
+            if cached.get('fetched') and (datetime.now() - cached['fetched']).days < 1:
+                return cached.get('date'), cached.get('days_until')
+        
+        try:
+            stock = yf.Ticker(ticker)
+            
+            # Try to get earnings dates
+            try:
+                calendar = stock.calendar
+                if calendar is not None and not calendar.empty:
+                    if 'Earnings Date' in calendar.index:
+                        earnings_date = calendar.loc['Earnings Date']
+                        if isinstance(earnings_date, pd.Series):
+                            earnings_date = earnings_date.iloc[0]
+                        if pd.notna(earnings_date):
+                            if isinstance(earnings_date, str):
+                                earnings_date = pd.to_datetime(earnings_date)
+                            days_until = (earnings_date.date() - date.today()).days
+                            cls._cache[ticker] = {
+                                'date': earnings_date,
+                                'days_until': days_until,
+                                'fetched': datetime.now()
+                            }
+                            return earnings_date, days_until
+            except Exception:
+                pass
+            
+            # Fallback: try earnings_dates
+            try:
+                earnings_dates = stock.earnings_dates
+                if earnings_dates is not None and not earnings_dates.empty:
+                    future_dates = earnings_dates[earnings_dates.index >= pd.Timestamp.now()]
+                    if not future_dates.empty:
+                        next_date = future_dates.index[0]
+                        days_until = (next_date.date() - date.today()).days
+                        cls._cache[ticker] = {
+                            'date': next_date,
+                            'days_until': days_until,
+                            'fetched': datetime.now()
+                        }
+                        return next_date, days_until
+            except Exception:
+                pass
+                
+        except Exception:
+            pass
+        
+        cls._cache[ticker] = {'date': None, 'days_until': None, 'fetched': datetime.now()}
+        return None, None
+    
+    @classmethod
+    def is_in_blackout(cls, ticker, blackout_days=EARNINGS_BLACKOUT_DAYS, post_days=EARNINGS_POST_DAYS):
+        """
+        Check if ticker is in earnings blackout period.
+        Returns: (is_blackout, reason_string)
+        """
+        earnings_date, days_until = cls.get_earnings_date(ticker)
+        
+        if earnings_date is None:
+            return False, "Earnings date unknown"
+        
+        if days_until is not None:
+            if 0 <= days_until <= blackout_days:
+                return True, f"Earnings in {days_until} days"
+            elif -post_days <= days_until < 0:
+                return True, f"Earnings {abs(days_until)} days ago"
+        
+        return False, f"Earnings in {days_until} days" if days_until else "OK"
+
+
+# =============================================================================
+# PERFORMANCE DASHBOARD
+# =============================================================================
+class PerformanceDashboard:
+    """Generate performance charts and statistics."""
+    
+    @staticmethod
+    def generate(tracker_file=SIGNAL_TRACKER_FILE, output_file=DASHBOARD_FILE):
+        """Generate a performance dashboard image."""
+        if not HAS_MATPLOTLIB:
+            print("  Dashboard requires matplotlib. Install with: pip install matplotlib")
+            return False
+        
+        # Load tracker data
+        if not os.path.exists(tracker_file):
+            print("  No tracking data found yet.")
+            return False
+        
+        try:
+            with open(tracker_file, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"  Failed to load tracker data: {e}")
+            return False
+        
+        completed = data.get('completed_signals', [])
+        active = data.get('active_signals', {})
+        stats = data.get('stats', {})
+        
+        if not completed and not active:
+            print("  No signals to display yet.")
+            return False
+        
+        # Create dashboard
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig.suptitle('Titan Trade Performance Dashboard', fontsize=16, fontweight='bold')
+        
+        # 1. Cumulative P&L Chart
+        ax1 = axes[0, 0]
+        if completed:
+            dates = []
+            cum_pnl = []
+            running_pnl = 0
+            for sig in completed:
+                if sig.get('exit_date') and sig.get('pnl_pct') is not None:
+                    try:
+                        exit_date = datetime.fromisoformat(sig['exit_date'].replace('Z', '+00:00'))
+                        dates.append(exit_date)
+                        running_pnl += sig['pnl_pct']
+                        cum_pnl.append(running_pnl)
+                    except Exception:
+                        pass
+            
+            if dates:
+                ax1.plot(dates, cum_pnl, 'b-', linewidth=2, marker='o', markersize=4)
+                ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+                ax1.fill_between(dates, cum_pnl, 0, 
+                               where=[p >= 0 for p in cum_pnl], 
+                               color='green', alpha=0.3)
+                ax1.fill_between(dates, cum_pnl, 0, 
+                               where=[p < 0 for p in cum_pnl], 
+                               color='red', alpha=0.3)
+                ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+                ax1.set_title('Cumulative P&L (%)')
+                ax1.set_ylabel('P&L %')
+                ax1.grid(True, alpha=0.3)
+            else:
+                ax1.text(0.5, 0.5, 'No completed trades', ha='center', va='center', transform=ax1.transAxes)
+                ax1.set_title('Cumulative P&L (%)')
+        else:
+            ax1.text(0.5, 0.5, 'No completed trades', ha='center', va='center', transform=ax1.transAxes)
+            ax1.set_title('Cumulative P&L (%)')
+        
+        # 2. Win/Loss Distribution
+        ax2 = axes[0, 1]
+        wins = stats.get('wins', 0)
+        losses = stats.get('losses', 0)
+        if wins + losses > 0:
+            colors = ['#2ecc71', '#e74c3c']
+            ax2.pie([wins, losses], labels=[f'Wins ({wins})', f'Losses ({losses})'], 
+                   colors=colors, autopct='%1.1f%%', startangle=90)
+            ax2.set_title(f'Win Rate: {wins/(wins+losses)*100:.1f}%')
+        else:
+            ax2.text(0.5, 0.5, 'No completed trades', ha='center', va='center', transform=ax2.transAxes)
+            ax2.set_title('Win/Loss Distribution')
+        
+        # 3. P&L Distribution Histogram
+        ax3 = axes[1, 0]
+        if completed:
+            pnls = [s.get('pnl_pct', 0) for s in completed if s.get('pnl_pct') is not None]
+            if pnls:
+                colors = ['green' if p >= 0 else 'red' for p in pnls]
+                ax3.hist(pnls, bins=20, color='steelblue', edgecolor='black', alpha=0.7)
+                ax3.axvline(x=0, color='black', linestyle='--', linewidth=2)
+                ax3.axvline(x=np.mean(pnls), color='orange', linestyle='-', linewidth=2, label=f'Avg: {np.mean(pnls):.2f}%')
+                ax3.set_title('P&L Distribution')
+                ax3.set_xlabel('P&L %')
+                ax3.set_ylabel('Frequency')
+                ax3.legend()
+                ax3.grid(True, alpha=0.3)
+            else:
+                ax3.text(0.5, 0.5, 'No P&L data', ha='center', va='center', transform=ax3.transAxes)
+                ax3.set_title('P&L Distribution')
+        else:
+            ax3.text(0.5, 0.5, 'No completed trades', ha='center', va='center', transform=ax3.transAxes)
+            ax3.set_title('P&L Distribution')
+        
+        # 4. Summary Statistics
+        ax4 = axes[1, 1]
+        ax4.axis('off')
+        
+        total_signals = stats.get('total_signals', 0)
+        total_pnl = stats.get('total_pnl_pct', 0)
+        win_rate = (wins / total_signals * 100) if total_signals > 0 else 0
+        avg_pnl = total_pnl / total_signals if total_signals > 0 else 0
+        
+        summary_text = f"""
+        PERFORMANCE SUMMARY
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        
+        Total Trades:     {total_signals}
+        Active Signals:   {len(active)}
+        
+        Wins:             {wins}
+        Losses:           {losses}
+        Win Rate:         {win_rate:.1f}%
+        
+        Total P&L:        {total_pnl:+.2f}%
+        Average P&L:      {avg_pnl:+.2f}%
+        
+        Started:          {stats.get('started', 'N/A')[:10] if stats.get('started') else 'N/A'}
+        """
+        
+        ax4.text(0.1, 0.9, summary_text, transform=ax4.transAxes, fontsize=12,
+                verticalalignment='top', fontfamily='monospace',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        plt.tight_layout()
+        
+        # Save dashboard
+        try:
+            plt.savefig(output_file, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            print(f"  Dashboard saved to: {output_file}")
+            return True
+        except Exception as e:
+            print(f"  Failed to save dashboard: {e}")
+            plt.close(fig)
+            return False
+    
+    @staticmethod
+    def print_stats(tracker_file=SIGNAL_TRACKER_FILE):
+        """Print performance statistics to console."""
+        if not os.path.exists(tracker_file):
+            print("  No tracking data found.")
+            return
+        
+        try:
+            with open(tracker_file, 'r') as f:
+                data = json.load(f)
+        except Exception:
+            print("  Failed to load tracker data.")
+            return
+        
+        stats = data.get('stats', {})
+        active = data.get('active_signals', {})
+        completed = data.get('completed_signals', [])
+        
+        total = stats.get('total_signals', 0)
+        wins = stats.get('wins', 0)
+        losses = stats.get('losses', 0)
+        total_pnl = stats.get('total_pnl_pct', 0)
+        
+        print("\n" + "="*60)
+        print("  PERFORMANCE STATISTICS")
+        print("="*60)
+        print(f"  Started:        {stats.get('started', 'N/A')[:10] if stats.get('started') else 'N/A'}")
+        print(f"  Active Signals: {len(active)}")
+        print(f"  Completed:      {total}")
+        print("-"*60)
+        
+        if total > 0:
+            win_rate = wins / total * 100
+            avg_pnl = total_pnl / total
+            print(f"  Win Rate:       {win_rate:.1f}% ({wins}W / {losses}L)")
+            print(f"  Total P&L:      {total_pnl:+.2f}%")
+            print(f"  Average P&L:    {avg_pnl:+.2f}%")
+            
+            # Calculate profit factor from completed trades
+            if completed:
+                gross_profit = sum(s.get('pnl_pct', 0) for s in completed if s.get('pnl_pct', 0) > 0)
+                gross_loss = abs(sum(s.get('pnl_pct', 0) for s in completed if s.get('pnl_pct', 0) < 0))
+                pf = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+                print(f"  Profit Factor:  {pf:.2f}")
+        else:
+            print("  No completed trades yet.")
+        
+        print("="*60)
+
+
+# =============================================================================
+# SCHEDULED SCANNING
+# =============================================================================
+class ScheduledScanner:
+    """Run scans at scheduled times."""
+    
+    _stop_event = None
+    _thread = None
+    
+    @classmethod
+    def start(cls, scan_func, run_immediately=True):
+        """
+        Start scheduled scanning.
+        scan_func: The function to call for scanning (main scan logic)
+        """
+        if cls._thread is not None and cls._thread.is_alive():
+            print("  Scheduler already running.")
+            return
+        
+        cls._stop_event = threading.Event()
+        
+        def scheduler_loop():
+            print("\n" + "="*60)
+            print("  SCHEDULED SCANNING MODE")
+            print("="*60)
+            print(f"  Market Status: {MarketHours.get_market_status_string()}")
+            print(f"  Will scan at:")
+            print(f"    - {SCHEDULE_MARKET_OPEN_DELAY_MINUTES} min after market open (9:35 AM ET)")
+            print(f"    - {SCHEDULE_MARKET_CLOSE_BEFORE_MINUTES} min before market close (3:55 PM ET)")
+            print("  Press Ctrl+C to stop.")
+            print("="*60)
+            
+            last_scan_date = None
+            scanned_open = False
+            scanned_close = False
+            
+            while not cls._stop_event.is_set():
+                now = MarketHours.get_eastern_time()
+                today = now.date() if hasattr(now, 'date') else date.today()
+                
+                # Reset flags on new day
+                if last_scan_date != today:
+                    last_scan_date = today
+                    scanned_open = False
+                    scanned_close = False
+                
+                # Skip weekends
+                if now.weekday() >= 5:
+                    cls._stop_event.wait(60)
+                    continue
+                
+                hour = now.hour
+                minute = now.minute
+                
+                # Market open scan (9:35 AM)
+                target_open_hour = MARKET_OPEN_HOUR
+                target_open_minute = MARKET_OPEN_MINUTE + SCHEDULE_MARKET_OPEN_DELAY_MINUTES
+                if target_open_minute >= 60:
+                    target_open_hour += 1
+                    target_open_minute -= 60
+                
+                if not scanned_open and hour == target_open_hour and minute >= target_open_minute and minute < target_open_minute + 5:
+                    print(f"\n[{now.strftime('%H:%M')}] Running scheduled MARKET OPEN scan...")
+                    try:
+                        scan_func()
+                    except Exception as e:
+                        print(f"  Scan error: {e}")
+                    scanned_open = True
+                
+                # Market close scan (3:55 PM)
+                target_close_hour = MARKET_CLOSE_HOUR
+                target_close_minute = MARKET_CLOSE_MINUTE - SCHEDULE_MARKET_CLOSE_BEFORE_MINUTES
+                if target_close_minute < 0:
+                    target_close_hour -= 1
+                    target_close_minute += 60
+                
+                if not scanned_close and hour == target_close_hour and minute >= target_close_minute and minute < target_close_minute + 5:
+                    print(f"\n[{now.strftime('%H:%M')}] Running scheduled MARKET CLOSE scan...")
+                    try:
+                        scan_func()
+                    except Exception as e:
+                        print(f"  Scan error: {e}")
+                    scanned_close = True
+                
+                # Wait before checking again
+                cls._stop_event.wait(30)  # Check every 30 seconds
+        
+        cls._thread = threading.Thread(target=scheduler_loop, daemon=True)
+        cls._thread.start()
+        
+        if run_immediately:
+            print("  Running initial scan...")
+            scan_func()
+        
+        # Keep main thread alive
+        try:
+            while cls._thread.is_alive():
+                cls._thread.join(timeout=1)
+        except KeyboardInterrupt:
+            print("\n  Stopping scheduler...")
+            cls._stop_event.set()
+            cls._thread.join(timeout=5)
+            print("  Scheduler stopped.")
+    
+    @classmethod
+    def stop(cls):
+        """Stop the scheduler."""
+        if cls._stop_event:
+            cls._stop_event.set()
 
 
 def _true_range(high, low, prev_close):
@@ -483,6 +1265,396 @@ class RejectionTracker:
     def summary(self):
         return self.stats
 
+
+# =============================================================================
+# PORTFOLIO RISK MANAGER - Critical for survival
+# =============================================================================
+class PortfolioRiskManager:
+    """
+    Tracks portfolio-level risk and enforces hard limits.
+    This is what separates surviving traders from blown accounts.
+    """
+    
+    def __init__(
+        self,
+        account_size=ACCOUNT_SIZE,
+        max_daily_loss_pct=MAX_DAILY_LOSS_PCT,
+        max_weekly_loss_pct=MAX_WEEKLY_LOSS_PCT,
+        max_drawdown_pct=MAX_DRAWDOWN_PCT,
+        max_portfolio_heat=PORTFOLIO_HEAT_MAX,
+        risk_log_file=RISK_LOG_FILE,
+    ):
+        self.account_size = account_size
+        self.max_daily_loss_pct = max_daily_loss_pct
+        self.max_weekly_loss_pct = max_weekly_loss_pct
+        self.max_drawdown_pct = max_drawdown_pct
+        self.max_portfolio_heat = max_portfolio_heat
+        self.risk_log_file = risk_log_file
+        
+        # Load existing risk state
+        self._load_state()
+    
+    def _load_state(self):
+        """Load risk tracking state from file."""
+        self.state = {
+            "peak_equity": self.account_size,
+            "current_equity": self.account_size,
+            "daily_pnl": 0.0,
+            "weekly_pnl": 0.0,
+            "last_trade_date": None,
+            "last_week_start": None,
+            "open_positions": {},
+            "trade_history": [],
+        }
+        
+        if os.path.exists(self.risk_log_file):
+            try:
+                with open(self.risk_log_file, "r") as f:
+                    saved = json.load(f)
+                    self.state.update(saved)
+            except Exception:
+                pass
+    
+    def _save_state(self):
+        """Persist risk state to file."""
+        try:
+            with open(self.risk_log_file, "w") as f:
+                json.dump(self.state, f, indent=2, default=str)
+        except Exception:
+            pass
+    
+    def _reset_daily_if_needed(self):
+        """Reset daily P&L if it's a new trading day."""
+        today = date.today().isoformat()
+        if self.state["last_trade_date"] != today:
+            self.state["daily_pnl"] = 0.0
+            self.state["last_trade_date"] = today
+    
+    def _reset_weekly_if_needed(self):
+        """Reset weekly P&L if it's a new trading week."""
+        today = date.today()
+        # Get Monday of current week
+        week_start = (today - timedelta(days=today.weekday())).isoformat()
+        if self.state["last_week_start"] != week_start:
+            self.state["weekly_pnl"] = 0.0
+            self.state["last_week_start"] = week_start
+    
+    def update_equity(self, new_equity):
+        """Update current equity and track peak for drawdown."""
+        self.state["current_equity"] = new_equity
+        if new_equity > self.state["peak_equity"]:
+            self.state["peak_equity"] = new_equity
+        self._save_state()
+    
+    def record_trade_result(self, pnl_dollars):
+        """Record a closed trade result."""
+        self._reset_daily_if_needed()
+        self._reset_weekly_if_needed()
+        
+        self.state["daily_pnl"] += pnl_dollars
+        self.state["weekly_pnl"] += pnl_dollars
+        self.state["current_equity"] += pnl_dollars
+        
+        if self.state["current_equity"] > self.state["peak_equity"]:
+            self.state["peak_equity"] = self.state["current_equity"]
+        
+        self.state["trade_history"].append({
+            "date": datetime.now().isoformat(),
+            "pnl": pnl_dollars,
+        })
+        
+        # Keep only last 100 trades in history
+        if len(self.state["trade_history"]) > 100:
+            self.state["trade_history"] = self.state["trade_history"][-100:]
+        
+        self._save_state()
+    
+    def get_current_drawdown_pct(self):
+        """Calculate current drawdown from peak."""
+        peak = self.state["peak_equity"]
+        current = self.state["current_equity"]
+        if peak <= 0:
+            return 0.0
+        return (peak - current) / peak * 100
+    
+    def get_daily_loss_pct(self):
+        """Get today's P&L as percentage of account."""
+        self._reset_daily_if_needed()
+        return -self.state["daily_pnl"] / self.account_size * 100
+    
+    def get_weekly_loss_pct(self):
+        """Get this week's P&L as percentage of account."""
+        self._reset_weekly_if_needed()
+        return -self.state["weekly_pnl"] / self.account_size * 100
+    
+    def calculate_portfolio_heat(self, open_positions):
+        """
+        Calculate total portfolio risk (heat).
+        Heat = sum of (risk per share * shares) for all positions.
+        """
+        total_risk = 0.0
+        for ticker, pos in open_positions.items():
+            entry = pos.get("entry_price", 0)
+            stop = pos.get("stop_loss", 0)
+            shares = pos.get("shares", 0)
+            risk_per_share = entry - stop
+            if risk_per_share > 0:
+                total_risk += risk_per_share * shares
+        
+        return total_risk / self.account_size * 100 if self.account_size > 0 else 0.0
+    
+    def can_take_new_trade(self, open_positions=None):
+        """
+        Check if we're allowed to take a new trade based on risk limits.
+        Returns: (allowed: bool, reason: str)
+        """
+        self._reset_daily_if_needed()
+        self._reset_weekly_if_needed()
+        
+        # Check drawdown
+        dd = self.get_current_drawdown_pct()
+        if dd >= self.max_drawdown_pct:
+            return False, f"MAX DRAWDOWN EXCEEDED: {dd:.1f}% (limit: {self.max_drawdown_pct}%)"
+        
+        # Check daily loss
+        daily_loss = self.get_daily_loss_pct()
+        if daily_loss >= self.max_daily_loss_pct:
+            return False, f"DAILY LOSS LIMIT: {daily_loss:.1f}% (limit: {self.max_daily_loss_pct}%)"
+        
+        # Check weekly loss
+        weekly_loss = self.get_weekly_loss_pct()
+        if weekly_loss >= self.max_weekly_loss_pct:
+            return False, f"WEEKLY LOSS LIMIT: {weekly_loss:.1f}% (limit: {self.max_weekly_loss_pct}%)"
+        
+        # Check portfolio heat
+        if open_positions:
+            heat = self.calculate_portfolio_heat(open_positions)
+            if heat >= self.max_portfolio_heat:
+                return False, f"PORTFOLIO HEAT LIMIT: {heat:.1f}% (limit: {self.max_portfolio_heat}%)"
+        
+        return True, "OK"
+    
+    def get_position_size_scalar(self):
+        """
+        Returns a scalar (0.0 to 1.0) to reduce position size based on risk state.
+        As we approach limits, we reduce size progressively.
+        """
+        # Start at 100%
+        scalar = 1.0
+        
+        # Reduce as drawdown increases
+        dd = self.get_current_drawdown_pct()
+        if dd > self.max_drawdown_pct * 0.5:  # Past 50% of max DD
+            dd_scalar = 1.0 - (dd - self.max_drawdown_pct * 0.5) / (self.max_drawdown_pct * 0.5)
+            scalar = min(scalar, max(0.25, dd_scalar))
+        
+        # Reduce as daily loss increases
+        daily_loss = self.get_daily_loss_pct()
+        if daily_loss > self.max_daily_loss_pct * 0.5:
+            daily_scalar = 1.0 - (daily_loss - self.max_daily_loss_pct * 0.5) / (self.max_daily_loss_pct * 0.5)
+            scalar = min(scalar, max(0.25, daily_scalar))
+        
+        return scalar
+    
+    def get_risk_status(self, open_positions=None):
+        """Get current risk status summary."""
+        dd = self.get_current_drawdown_pct()
+        daily = self.get_daily_loss_pct()
+        weekly = self.get_weekly_loss_pct()
+        heat = self.calculate_portfolio_heat(open_positions or {})
+        
+        can_trade, reason = self.can_take_new_trade(open_positions)
+        
+        return {
+            "can_trade": can_trade,
+            "reason": reason,
+            "drawdown_pct": dd,
+            "daily_loss_pct": daily,
+            "weekly_loss_pct": weekly,
+            "portfolio_heat_pct": heat,
+            "position_size_scalar": self.get_position_size_scalar(),
+            "current_equity": self.state["current_equity"],
+            "peak_equity": self.state["peak_equity"],
+        }
+
+
+# =============================================================================
+# STATISTICAL CONFIDENCE SCORER - Replaces fake AI module
+# =============================================================================
+class StatisticalConfidenceScorer:
+    """
+    Calculates confidence score based on statistical robustness.
+    No magic - just math that professionals trust.
+    """
+    
+    @staticmethod
+    def calculate_confidence(
+        trades: int,
+        win_rate: float,
+        profit_factor: float,
+        expectancy: float,
+        wf_pass_rate: float = None,
+        oos_pf: float = None,
+        consistency_score: float = None,
+    ) -> dict:
+        """
+        Calculate overall confidence score (0-100) based on statistical factors.
+        
+        Returns dict with:
+        - score: Overall confidence (0-100)
+        - grade: Letter grade (A/B/C/D/F)
+        - factors: Breakdown of scoring factors
+        """
+        score = 0
+        factors = {}
+        
+        # Factor 1: Sample Size (0-25 points)
+        # Need 30+ trades for basic confidence, 50+ for high confidence
+        if trades >= 100:
+            sample_score = 25
+        elif trades >= 50:
+            sample_score = 20
+        elif trades >= 30:
+            sample_score = 15
+        elif trades >= 15:
+            sample_score = 8
+        else:
+            sample_score = 0
+        score += sample_score
+        factors["sample_size"] = {"value": trades, "score": sample_score, "max": 25}
+        
+        # Factor 2: Win Rate Consistency (0-20 points)
+        # Higher win rate = more consistent edge
+        if win_rate >= 60:
+            wr_score = 20
+        elif win_rate >= 55:
+            wr_score = 15
+        elif win_rate >= 50:
+            wr_score = 10
+        elif win_rate >= 45:
+            wr_score = 5
+        else:
+            wr_score = 0
+        score += wr_score
+        factors["win_rate"] = {"value": win_rate, "score": wr_score, "max": 20}
+        
+        # Factor 3: Profit Factor (0-20 points)
+        # PF > 1.5 is good, > 2.0 is excellent
+        if profit_factor >= 2.5:
+            pf_score = 20
+        elif profit_factor >= 2.0:
+            pf_score = 16
+        elif profit_factor >= 1.5:
+            pf_score = 12
+        elif profit_factor >= 1.2:
+            pf_score = 8
+        elif profit_factor >= 1.0:
+            pf_score = 4
+        else:
+            pf_score = 0
+        score += pf_score
+        factors["profit_factor"] = {"value": profit_factor, "score": pf_score, "max": 20}
+        
+        # Factor 4: Expectancy (0-15 points)
+        # Must be meaningfully positive after all costs
+        if expectancy >= 0.02:  # 2%+ per trade
+            exp_score = 15
+        elif expectancy >= 0.01:  # 1%+ per trade
+            exp_score = 12
+        elif expectancy >= 0.005:  # 0.5%+ per trade
+            exp_score = 8
+        elif expectancy >= 0.002:  # 0.2%+ per trade
+            exp_score = 4
+        else:
+            exp_score = 0
+        score += exp_score
+        factors["expectancy"] = {"value": expectancy, "score": exp_score, "max": 15}
+        
+        # Factor 5: Walk-Forward Validation (0-10 points)
+        if wf_pass_rate is not None:
+            if wf_pass_rate >= 0.75:
+                wf_score = 10
+            elif wf_pass_rate >= 0.50:
+                wf_score = 7
+            elif wf_pass_rate >= 0.25:
+                wf_score = 3
+            else:
+                wf_score = 0
+            score += wf_score
+            factors["wf_pass_rate"] = {"value": wf_pass_rate, "score": wf_score, "max": 10}
+        
+        # Factor 6: Out-of-Sample Performance (0-10 points)
+        if oos_pf is not None:
+            if oos_pf >= 1.5:
+                oos_score = 10
+            elif oos_pf >= 1.2:
+                oos_score = 7
+            elif oos_pf >= 1.0:
+                oos_score = 4
+            else:
+                oos_score = 0
+            score += oos_score
+            factors["oos_profit_factor"] = {"value": oos_pf, "score": oos_score, "max": 10}
+        
+        # Calculate grade
+        if score >= 80:
+            grade = "A"
+        elif score >= 65:
+            grade = "B"
+        elif score >= 50:
+            grade = "C"
+        elif score >= 35:
+            grade = "D"
+        else:
+            grade = "F"
+        
+        return {
+            "score": score,
+            "grade": grade,
+            "factors": factors,
+            "tradeable": score >= 50 and trades >= 30,  # Minimum bar for real trading
+        }
+    
+    @staticmethod
+    def calculate_t_statistic(trades: list) -> float:
+        """
+        Calculate t-statistic to test if returns are significantly > 0.
+        t > 2.0 suggests edge is statistically significant at 95% confidence.
+        """
+        if not trades or len(trades) < 10:
+            return 0.0
+        
+        mean_ret = np.mean(trades)
+        std_ret = np.std(trades, ddof=1)
+        n = len(trades)
+        
+        if std_ret == 0:
+            return 0.0
+        
+        t_stat = mean_ret / (std_ret / np.sqrt(n))
+        return float(t_stat)
+    
+    @staticmethod
+    def calculate_sharpe_ratio(trades: list, periods_per_year: int = 252) -> float:
+        """
+        Calculate annualized Sharpe ratio from trade returns.
+        Sharpe > 1.0 is good, > 2.0 is excellent.
+        """
+        if not trades or len(trades) < 10:
+            return 0.0
+        
+        mean_ret = np.mean(trades)
+        std_ret = np.std(trades, ddof=1)
+        
+        if std_ret == 0:
+            return 0.0
+        
+        # Annualize (assuming average holding period of ~5 days)
+        trades_per_year = periods_per_year / 5
+        sharpe = (mean_ret * trades_per_year) / (std_ret * np.sqrt(trades_per_year))
+        return float(sharpe)
+
+
 @dataclass
 class TitanSetup:
     ticker: str
@@ -497,282 +1669,139 @@ class TitanSetup:
     kelly: float       # Suggested size multiplier
     score: float       # Total Confidence Score
     sector: str
-    earnings_call: str # New field for clarity
+    earnings_call: str
     note: str
-    # Advanced AI Fields
-    ml_score: float = 0.0        # ML-based confidence (0-100)
-    options_flow: str = "N/A"    # BULLISH/BEARISH/NEUTRAL
-    sentiment: str = "N/A"       # BULLISH/BEARISH/NEUTRAL
-    ai_boost: float = 0.0        # Total AI score modifier
+    # Statistical Confidence Metrics (real, not fake AI)
+    confidence_score: float = 0.0    # Statistical confidence (0-100)
+    confidence_grade: str = "F"      # Letter grade (A/B/C/D/F)
+    trend_grade: str = "F"           # Trend quality grade
+    t_statistic: float = 0.0         # Statistical significance
 
-# -----------------------------------------------------------------------------
-# AI ENHANCEMENT MODULE (Advanced Features)
-# -----------------------------------------------------------------------------
-class AIEnhancer:
+# =============================================================================
+# TREND QUALITY ANALYZER - Simple, robust, no magic
+# =============================================================================
+class TrendQualityAnalyzer:
     """
-    Advanced AI features for signal enhancement:
-    1. ML Signal Filtering (Random Forest-like scoring)
-    2. Options Flow Detection (put/call ratio analysis)
-    3. News Sentiment Analysis (RSS/headline scanning)
+    Analyzes trend quality using proven technical factors.
+    No fake AI - just straightforward technical analysis.
     """
     
-    def __init__(self):
-        self.sentiment_cache = {}  # Cache sentiment results
-        self._session = None
-    
-    @property
-    def session(self):
-        if self._session is None:
-            self._session = requests.Session()
-            self._session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            })
-        return self._session
-    
-    # -------------------------------------------------------------------------
-    # 1. ML SIGNAL FILTER (Feature-based scoring)
-    # -------------------------------------------------------------------------
-    def ml_score(self, df, backtest_res):
+    @staticmethod
+    def analyze(df, backtest_res):
         """
-        ML-style signal scoring using handcrafted features.
-        Returns: Score 0-100 (higher = better trade probability)
-        
-        Features used:
-        - Backtest win rate
-        - Profit factor
-        - Trend strength (SMA alignment)
-        - Volume confirmation
-        - Volatility regime
-        - Momentum indicators
+        Analyze trend quality and return objective metrics.
+        Returns dict with clear, interpretable factors.
         """
-        if len(df) < 60:
-            return 50.0
-        
-        score = 0
-        
-        # Feature 1: Backtest Quality (0-25 points)
-        wr = backtest_res.get('win_rate', 50)
-        pf = backtest_res.get('pf', 1.0)
-        score += min(15, (wr - 50) * 0.5)  # +15 for 80% WR
-        score += min(10, (pf - 1.0) * 5)    # +10 for PF 3.0
+        if len(df) < 200:
+            return {
+                "trend_score": 0,
+                "trend_grade": "F",
+                "factors": {},
+            }
         
         c = df['Close']
         h = df['High']
         v = df['Volume']
         
-        # Feature 2: Trend Strength (0-20 points)
+        factors = {}
+        score = 0
+        
+        # Factor 1: Moving Average Alignment (0-20)
         sma20 = c.rolling(20).mean().iloc[-1]
         sma50 = c.rolling(50).mean().iloc[-1]
-        sma200 = c.rolling(200).mean().iloc[-1] if len(df) >= 200 else sma50
+        sma200 = c.rolling(200).mean().iloc[-1]
+        curr = c.iloc[-1]
         
-        if c.iloc[-1] > sma20 > sma50 > sma200:
-            score += 20  # Perfect trend alignment
-        elif c.iloc[-1] > sma50 > sma200:
-            score += 12
-        elif c.iloc[-1] > sma200:
-            score += 5
+        ma_alignment = 0
+        if curr > sma20 > sma50 > sma200:
+            ma_alignment = 20  # Perfect bull alignment
+        elif curr > sma50 > sma200:
+            ma_alignment = 15
+        elif curr > sma200:
+            ma_alignment = 10
+        elif curr > sma50:
+            ma_alignment = 5
         
-        # Feature 3: Volume Confirmation (0-15 points)
-        vol_avg = v.rolling(20).mean().iloc[-1]
-        vol_ratio = v.iloc[-1] / (vol_avg + 1e-9)
-        if vol_ratio > 2.0:
-            score += 15  # Strong volume surge
-        elif vol_ratio > 1.5:
-            score += 10
-        elif vol_ratio > 1.0:
-            score += 5
+        factors["ma_alignment"] = ma_alignment
+        score += ma_alignment
         
-        # Feature 4: Near High (0-15 points) - Blue Sky territory
+        # Factor 2: Distance from 52-week high (0-15)
         high_52w = h.iloc[-252:].max() if len(df) >= 252 else h.max()
-        pct_from_high = (c.iloc[-1] / high_52w - 1) * 100
-        if pct_from_high > -2:
-            score += 15  # At new highs
-        elif pct_from_high > -5:
-            score += 10
-        elif pct_from_high > -10:
-            score += 5
+        pct_from_high = (curr / high_52w - 1) * 100
         
-        # Feature 5: Momentum (0-15 points)
-        ret_5d = (c.iloc[-1] / c.iloc[-6] - 1) * 100 if len(df) >= 6 else 0
-        ret_20d = (c.iloc[-1] / c.iloc[-21] - 1) * 100 if len(df) >= 21 else 0
+        if pct_from_high > -3:
+            proximity_score = 15
+        elif pct_from_high > -7:
+            proximity_score = 12
+        elif pct_from_high > -15:
+            proximity_score = 8
+        elif pct_from_high > -25:
+            proximity_score = 4
+        else:
+            proximity_score = 0
         
-        if ret_5d > 0 and ret_20d > 0:
-            score += 10
-        if ret_5d > 3:
-            score += 5  # Strong recent momentum
+        factors["proximity_to_high"] = proximity_score
+        factors["pct_from_52w_high"] = round(pct_from_high, 2)
+        score += proximity_score
         
-        # Feature 6: Volatility Squeeze (0-10 points)
-        atr = _atr_series(df).iloc[-1] if len(df) >= 14 else 0
-        atr_pct = atr / c.iloc[-1] if c.iloc[-1] > 0 else 0
-        if 0.01 < atr_pct < 0.03:
-            score += 10  # Goldilocks volatility
-        elif atr_pct < 0.05:
-            score += 5
+        # Factor 3: Volume trend (0-10)
+        vol_20d = v.iloc[-20:].mean()
+        vol_50d = v.iloc[-50:].mean()
+        vol_ratio = vol_20d / (vol_50d + 1e-9)
         
-        return min(100, max(0, score))
-    
-    # -------------------------------------------------------------------------
-    # 2. OPTIONS FLOW DETECTION
-    # -------------------------------------------------------------------------
-    def get_options_flow(self, ticker):
-        """
-        Analyze put/call ratio and unusual options activity.
-        Returns: "BULLISH", "BEARISH", or "NEUTRAL"
+        if vol_ratio > 1.3:
+            vol_score = 10  # Volume expanding
+        elif vol_ratio > 1.0:
+            vol_score = 7
+        elif vol_ratio > 0.7:
+            vol_score = 4
+        else:
+            vol_score = 0  # Volume contracting badly
         
-        Uses Yahoo Finance options data (free).
-        """
-        try:
-            t = yf.Ticker(ticker)
-            
-            # Get nearest expiration
-            expirations = t.options
-            if not expirations:
-                return "NEUTRAL", 0
-            
-            # Use nearest expiration
-            nearest_exp = expirations[0]
-            chain = t.option_chain(nearest_exp)
-            
-            calls = chain.calls
-            puts = chain.puts
-            
-            if calls.empty or puts.empty:
-                return "NEUTRAL", 0
-            
-            # Calculate put/call ratio by volume
-            call_vol = calls['volume'].sum() if 'volume' in calls.columns else 0
-            put_vol = puts['volume'].sum() if 'volume' in puts.columns else 0
-            
-            if call_vol == 0 and put_vol == 0:
-                return "NEUTRAL", 0
-            
-            pc_ratio = put_vol / (call_vol + 1e-9)
-            
-            # Calculate unusual activity score
-            call_oi = calls['openInterest'].sum() if 'openInterest' in calls.columns else 1
-            put_oi = puts['openInterest'].sum() if 'openInterest' in puts.columns else 1
-            
-            # Volume to OI ratio indicates unusual activity
-            call_voi = call_vol / (call_oi + 1e-9)
-            put_voi = put_vol / (put_oi + 1e-9)
-            
-            # Interpret
-            if pc_ratio < 0.5 and call_voi > 0.5:
-                return "BULLISH", min(20, call_voi * 10)
-            elif pc_ratio > 2.0 and put_voi > 0.5:
-                return "BEARISH", -min(20, put_voi * 10)
-            else:
-                return "NEUTRAL", 0
-                
-        except Exception:
-            return "NEUTRAL", 0
-    
-    # -------------------------------------------------------------------------
-    # 3. NEWS SENTIMENT ANALYSIS
-    # -------------------------------------------------------------------------
-    def get_news_sentiment(self, ticker):
-        """
-        Analyze recent news headlines for sentiment.
-        Returns: "BULLISH", "BEARISH", or "NEUTRAL" and score modifier
+        factors["volume_trend"] = vol_score
+        score += vol_score
         
-        Uses Yahoo Finance news feed (free).
-        """
-        # Check cache first (avoid repeated calls)
-        cache_key = f"{ticker}_{datetime.now().strftime('%Y%m%d%H')}"
-        if cache_key in self.sentiment_cache:
-            return self.sentiment_cache[cache_key]
+        # Factor 4: Trend momentum (0-15)
+        ret_20d = (curr / c.iloc[-21] - 1) * 100 if len(df) >= 21 else 0
+        ret_60d = (curr / c.iloc[-61] - 1) * 100 if len(df) >= 61 else 0
         
-        try:
-            t = yf.Ticker(ticker)
-            news = t.news if hasattr(t, 'news') else []
-            
-            if not news:
-                result = ("NEUTRAL", 0)
-                self.sentiment_cache[cache_key] = result
-                return result
-            
-            # Bullish keywords
-            bullish_words = [
-                'surge', 'soar', 'jump', 'bull', 'upgrade', 'beat', 'strong',
-                'record', 'growth', 'rally', 'breakout', 'buy', 'outperform',
-                'profit', 'gain', 'rise', 'up', 'positive', 'boom', 'success'
-            ]
-            
-            # Bearish keywords
-            bearish_words = [
-                'crash', 'fall', 'drop', 'bear', 'downgrade', 'miss', 'weak',
-                'decline', 'loss', 'sell', 'underperform', 'warning', 'concern',
-                'down', 'negative', 'fail', 'risk', 'cut', 'layoff', 'lawsuit'
-            ]
-            
-            bullish_count = 0
-            bearish_count = 0
-            
-            for article in news[:10]:  # Check last 10 articles
-                title = article.get('title', '').lower()
-                
-                for word in bullish_words:
-                    if word in title:
-                        bullish_count += 1
-                        
-                for word in bearish_words:
-                    if word in title:
-                        bearish_count += 1
-            
-            # Determine sentiment
-            net_sentiment = bullish_count - bearish_count
-            
-            if net_sentiment >= 3:
-                result = ("BULLISH", min(15, net_sentiment * 3))
-            elif net_sentiment <= -3:
-                result = ("BEARISH", max(-15, net_sentiment * 3))
-            else:
-                result = ("NEUTRAL", net_sentiment * 2)
-            
-            self.sentiment_cache[cache_key] = result
-            return result
-            
-        except Exception:
-            return ("NEUTRAL", 0)
-    
-    # -------------------------------------------------------------------------
-    # COMBINED AI ANALYSIS
-    # -------------------------------------------------------------------------
-    def analyze(self, ticker, df, backtest_res):
-        """
-        Run all AI analyses and return combined results.
-        """
-        results = {
-            'ml_score': self.ml_score(df, backtest_res),
-            'options_flow': 'N/A',
-            'options_boost': 0,
-            'sentiment': 'N/A', 
-            'sentiment_boost': 0,
-            'ai_boost': 0
+        if ret_20d > 5 and ret_60d > 10:
+            momentum_score = 15
+        elif ret_20d > 2 and ret_60d > 5:
+            momentum_score = 12
+        elif ret_20d > 0 and ret_60d > 0:
+            momentum_score = 8
+        elif ret_20d > -5 and ret_60d > -10:
+            momentum_score = 4
+        else:
+            momentum_score = 0
+        
+        factors["momentum"] = momentum_score
+        factors["return_20d"] = round(ret_20d, 2)
+        factors["return_60d"] = round(ret_60d, 2)
+        score += momentum_score
+        
+        # Determine grade
+        if score >= 50:
+            grade = "A"
+        elif score >= 40:
+            grade = "B"
+        elif score >= 30:
+            grade = "C"
+        elif score >= 20:
+            grade = "D"
+        else:
+            grade = "F"
+        
+        return {
+            "trend_score": score,
+            "trend_grade": grade,
+            "factors": factors,
         }
-        
-        # Options Flow (can be slow, only for promising stocks)
-        if results['ml_score'] >= 60:
-            flow, boost = self.get_options_flow(ticker)
-            results['options_flow'] = flow
-            results['options_boost'] = boost
-        
-        # News Sentiment
-        sentiment, s_boost = self.get_news_sentiment(ticker)
-        results['sentiment'] = sentiment
-        results['sentiment_boost'] = s_boost
-        
-        # Calculate total AI boost
-        results['ai_boost'] = (
-            (results['ml_score'] - 50) * 0.2 +  # ML contribution
-            results['options_boost'] +           # Options contribution
-            results['sentiment_boost']           # Sentiment contribution
-        )
-        
-        return results
 
-# Global AI Enhancer instance
-AI_ENHANCER = AIEnhancer()
+
+# Global analyzer instance
+TREND_ANALYZER = TrendQualityAnalyzer()
 
 # -----------------------------------------------------------------------------
 # 1. MARKET REGIME (The "Traffic Light")
@@ -818,26 +1847,30 @@ class MarketRegime:
                 status = "Correction"
                 score = 0.2
         
-        # --- VIX INTEGRATION (Pro Trader Secret) ---
-        # High VIX = high fear = reduce exposure
+        # --- VIX INTEGRATION ---
+        # High VIX = high fear = reduce exposure or halt trading
         vix_scalar = 1.0
+        vix_level = None
         for vix_key in ["^VIX", "VIX", "VIXY"]:
             if vix_key in self.data:
                 try:
                     vix_df = self.data[vix_key]
                     if isinstance(vix_df, pd.DataFrame) and 'Close' in vix_df.columns:
-                        vix = float(vix_df['Close'].iloc[-1])
-                        if vix > VIX_EXTREME_THRESHOLD:
-                            vix_scalar = 0.3  # Extreme fear - cut exposure 70%
+                        vix_level = float(vix_df['Close'].iloc[-1])
+                        if vix_level > VIX_PANIC_THRESHOLD:
+                            vix_scalar = 0.0  # PANIC - NO NEW POSITIONS
+                            status = f"{status}+PANIC"
+                        elif vix_level > VIX_EXTREME_THRESHOLD:
+                            vix_scalar = 0.25  # Extreme fear - cut exposure 75%
                             status = f"{status}+FEAR"
-                        elif vix > VIX_HIGH_THRESHOLD:
-                            vix_scalar = 0.6  # High fear - cut exposure 40%
+                        elif vix_level > VIX_HIGH_THRESHOLD:
+                            vix_scalar = 0.5  # High fear - cut exposure 50%
                             status = f"{status}+CAUTION"
                         break
                 except Exception:
                     pass
                 
-        return status, score * vix_scalar
+        return status, score * vix_scalar, vix_level
 
 # -----------------------------------------------------------------------------
 # 2. VALIDATOR ENGINE (The "Reality Check")
@@ -977,38 +2010,88 @@ class StrategyValidator:
         rs = gain / (loss + 1e-9)
         return 100 - (100 / (1 + rs))
 
-    def _simulate_trade(self, entry, stop, target, ohlc_data, start_idx, max_hold=8, trail_risk=None, trail_r1=1.0, trail_r2=2.0, trail_r3=3.0):
-        """Simulate a trade with 3-tier trailing stop (Pro Trader Secret)."""
-        closes, highs, lows = ohlc_data
+    def _simulate_trade(
+        self, 
+        entry, 
+        stop, 
+        target, 
+        ohlc_data, 
+        start_idx, 
+        max_hold=10,  # Extended from 8 for more realistic holding
+        trail_risk=None, 
+        trail_r1=1.0, 
+        trail_r2=2.0, 
+        trail_r3=3.0,
+        slippage_pct=0.003,  # 0.3% default slippage
+    ):
+        """
+        Simulate a trade with REALISTIC execution model.
+        
+        Key improvements:
+        1. Gap-through stops: If open gaps below stop, fill at open (not stop)
+        2. Slippage on entry and exit
+        3. More conservative stop checking (open first, then intraday)
+        """
+        closes, highs, lows, opens = ohlc_data
         stop_curr = stop
-        highest_since_entry = entry  # Track highest price for trailing
+        highest_since_entry = entry
         end_idx = min(start_idx + max_hold, len(closes))
+        
+        # Apply entry slippage (always pay the spread)
+        actual_entry = entry * (1 + slippage_pct)
 
         for j in range(start_idx, end_idx):
-            # Update highest price since entry
-            highest_since_entry = max(highest_since_entry, highs[j])
+            day_open = opens[j] if j < len(opens) else closes[j-1] if j > 0 else entry
+            day_high = highs[j]
+            day_low = lows[j]
+            day_close = closes[j]
             
-            # 3-Tier Trailing Stop Logic (Pro Trader Secret)
+            # Update highest price since entry (for trailing)
+            highest_since_entry = max(highest_since_entry, day_high)
+            
+            # 3-Tier Trailing Stop Logic
             if trail_risk is not None and trail_risk > 0:
                 # Tier 1: Move to breakeven at 1R
-                if highest_since_entry >= entry + (trail_risk * trail_r1):
-                    stop_curr = max(stop_curr, entry)  # breakeven
+                if highest_since_entry >= actual_entry + (trail_risk * trail_r1):
+                    stop_curr = max(stop_curr, actual_entry)
                 # Tier 2: Lock 1R at 2R profit
-                if highest_since_entry >= entry + (trail_risk * trail_r2):
-                    stop_curr = max(stop_curr, entry + trail_risk)  # lock 1R
-                # Tier 3: Lock 2R at 3R profit (NEW!)
-                if highest_since_entry >= entry + (trail_risk * trail_r3):
-                    stop_curr = max(stop_curr, entry + trail_risk * 2)  # lock 2R
-
-            # Conservative: check stop first
-            if lows[j] <= stop_curr:
-                return (stop_curr - entry) / entry
-            if highs[j] >= target:
-                return (target - entry) / entry
-
-            # Mark to market on last day
+                if highest_since_entry >= actual_entry + (trail_risk * trail_r2):
+                    stop_curr = max(stop_curr, actual_entry + trail_risk)
+                # Tier 3: Lock 2R at 3R profit
+                if highest_since_entry >= actual_entry + (trail_risk * trail_r3):
+                    stop_curr = max(stop_curr, actual_entry + trail_risk * 2)
+            
+            # =================================================================
+            # REALISTIC STOP EXECUTION
+            # =================================================================
+            # Check 1: Gap down through stop on open (WORST CASE - fill at open)
+            if day_open <= stop_curr:
+                # Stop is gapped through - fill at open, not stop price
+                fill_price = day_open * (1 - slippage_pct)  # Extra slippage on panic exit
+                return (fill_price - actual_entry) / actual_entry
+            
+            # Check 2: Intraday stop hit (fill at stop with slippage)
+            if day_low <= stop_curr:
+                fill_price = stop_curr * (1 - slippage_pct * 0.5)  # Some slippage
+                return (fill_price - actual_entry) / actual_entry
+            
+            # =================================================================
+            # TARGET CHECK
+            # =================================================================
+            # Check for gap up through target (fill at open, lucky)
+            if day_open >= target:
+                fill_price = day_open  # Lucky - gap through target
+                return (fill_price - actual_entry) / actual_entry
+            
+            # Check for intraday target hit
+            if day_high >= target:
+                fill_price = target * (1 - slippage_pct * 0.3)  # Some slippage
+                return (fill_price - actual_entry) / actual_entry
+            
+            # Mark to market on last day (forced exit)
             if j == end_idx - 1:
-                return (closes[j] - entry) / entry
+                fill_price = day_close * (1 - slippage_pct)
+                return (fill_price - actual_entry) / actual_entry
 
         return 0.0
 
@@ -1114,10 +2197,11 @@ class StrategyValidator:
                     buy_price,
                     stop_loss,
                     target,
-                    (closes, highs, lows),
-                    i + 1,
-                    max_hold=8,
+                    (closes, highs, lows, opens),
+                    i + 2,  # Start from day after trigger (i+1 is trigger day)
+                    max_hold=10,
                     trail_risk=risk,
+                    slippage_pct=0.003,  # 0.3% slippage for breakouts (crowded)
                 )
                 trades.append(outcome_pct)
         
@@ -1205,10 +2289,11 @@ class StrategyValidator:
                         buy_price,
                         stop,
                         target,
-                        (closes.values, highs.values, lows.values),
-                        i + 1,
-                        max_hold=8,
+                        (closes.values, highs.values, lows.values, opens.values),
+                        i + 2,  # Start from day after entry
+                        max_hold=10,
                         trail_risk=None,
+                        slippage_pct=0.001,  # 0.1% slippage for dips (less crowded)
                     )
                     trades.append(outcome_pct)
                     
@@ -1228,7 +2313,7 @@ class StrategyValidator:
         return res
 
 # -----------------------------------------------------------------------------
-# 3. OPTIMIZER (Auto-Tuning)
+# 3. OPTIMIZER (Conservative Auto-Tuning)
 # -----------------------------------------------------------------------------
 class Optimizer:
     def __init__(self, validator):
@@ -1236,21 +2321,25 @@ class Optimizer:
         
     def tune_breakout(self):
         """
-        Try different parameters including TARGET MULTIPLIER to find the best fit.
+        Try different parameters to find the best fit.
+        REQUIRES minimum 15 trades in optimization to avoid overfitting.
         """
         best_res = {'win_rate': 0, 'pf': 0, 'score': 0}
-        best_params = {'depth': 0.15, 'target_mult': 3.5}
+        best_params = {'depth': 0.18, 'target_mult': 3.0}  # Conservative defaults
         
-        # Grid Search: Depth vs Target
-        # Depth: 0.15 (Tight) to 0.25 (Loose)
-        # Target: 2.5 ATR (Quick) to 6.0 ATR (Runner)
-        for d in [0.15, 0.20, 0.25]:
-            for t_mult in [2.5, 3.5, 5.0, 6.0]:
+        # Grid Search with fewer parameters (avoid overfitting)
+        # Depth: 0.15 (Tight) to 0.22 (Moderate)
+        # Target: 2.5 ATR to 4.0 ATR (conservative range)
+        for d in [0.15, 0.18, 0.22]:
+            for t_mult in [2.5, 3.0, 3.5, 4.0]:
                 res = self.validator.backtest_breakout(depth=d, target_mult=t_mult)
-                # Score: PF * WR
+                # Score: PF * WR (only consider if enough trades)
+                if res['trades'] < 15:  # Require 15+ trades for optimization
+                    continue
+                    
                 score = res['pf'] * res['win_rate']
                 
-                if score > best_res['score'] and res['trades'] >= 2:
+                if score > best_res['score']:
                     best_res = res
                     best_res['score'] = score
                     best_params = {'depth': d, 'target_mult': t_mult}
@@ -1496,13 +2585,21 @@ class TitanBrain:
         tickers = [t.strip().upper() for t in tickers if t]
         tickers = list(dict.fromkeys(tickers))
 
-        # OHLCV
+        # OHLCV with Smart Auto-Refresh
         cache_ttl_sec = self.cache_ttl_hours * 3600
         cache_valid = (
             os.path.exists(OHLCV_CACHE_FILE)
             and cache_ttl_sec > 0
             and (time.time() - os.path.getmtime(OHLCV_CACHE_FILE) < cache_ttl_sec)
         )
+        
+        # Smart auto-refresh during market hours
+        smart_refresh = MarketHours.should_auto_refresh(OHLCV_CACHE_FILE, self.cache_ttl_hours)
+        if smart_refresh and not self.force_refresh:
+            market_status = MarketHours.get_market_status_string()
+            print(f"Smart Auto-Refresh: Market is {market_status}, refreshing data...")
+            cache_valid = False
+        
         if cache_valid and not self.force_refresh:
             print("Loading Market Cache...")
             try:
@@ -1616,11 +2713,15 @@ class TitanBrain:
             vol_avg20_series = volume.rolling(20).mean()
             vol_avg20 = float(vol_avg20_series.iloc[-1])
             dollar_vol_avg20 = vol_avg20 * c
-            if dollar_vol_avg20 < 5_000_000: 
+            
+            # Strict liquidity check - must meet minimum requirements
+            if dollar_vol_avg20 < MIN_AVG_DOLLAR_VOLUME: 
+                return None, "Low Price/Liquidity", None
+            if vol_avg20 < MIN_AVG_VOLUME:
                 return None, "Low Price/Liquidity", None
 
             atr = self.calculate_atr(df)
-            if atr <= 0 or atr / c > 0.12:
+            if atr <= 0 or atr / c > 0.10:  # Stricter volatility filter
                 return None, "Low Price/Liquidity", None
             
             # Relative strength vs SPY (3M)
@@ -1985,56 +3086,77 @@ class TitanBrain:
             R = avg_win / (avg_loss + 1e-9)  # Actual win/loss ratio
             kelly = max(0, (W * R - (1 - W)) / R) * 0.25  # Quarter-Kelly (safer)
             
-            # --- VOLATILITY-ADJUSTED POSITION SIZING (Pro Trader Secret) ---
-            # Reduce position size for volatile stocks
+            # --- POSITION SIZING: Multiple constraints ---
+            # 1. Volatility adjustment
             atr_pct = atr / c if c > 0 else 0.02
-            vol_scalar = min(1.0, 0.025 / (atr_pct + 1e-9))  # Reduce size for volatile stocks
-            risk_amt = min(self.risk_per_trade * vol_scalar, self.account_size * 0.01)
-            shares = max(1, int(risk_amt / (trigger - stop))) if (trigger - stop) > 0 else 0
+            vol_scalar = min(1.0, 0.025 / (atr_pct + 1e-9))
             
-            # --- SUPER POWER 1: INFO CHECK ---
+            # 2. Risk-based sizing
+            risk_amt = min(self.risk_per_trade * vol_scalar, self.account_size * MAX_RISK_PCT_PER_TRADE / 100)
+            risk_per_share = trigger - stop
+            shares_by_risk = max(1, int(risk_amt / risk_per_share)) if risk_per_share > 0 else 0
+            
+            # 3. Liquidity-based limit (never more than 1% of daily volume)
+            max_shares_by_liquidity = DataValidator.max_position_size(vol_avg20, c, MAX_POSITION_PCT_OF_VOLUME)
+            
+            # Take the minimum of risk-based and liquidity-based
+            shares = min(shares_by_risk, max_shares_by_liquidity) if max_shares_by_liquidity > 0 else shares_by_risk
+            
+            # 4. Calculate realistic slippage for this position
+            is_breakout = strategy_name.startswith("BREAKOUT")
+            expected_slippage = DataValidator.calculate_realistic_slippage(shares, vol_avg20, is_breakout)
+            
+            # If slippage is too high (>1%), reduce position or warn
+            if expected_slippage > 0.01:
+                # Reduce position to keep slippage under 1%
+                target_pct_of_volume = 0.5  # Aim for 0.5% of volume to reduce slippage
+                shares = min(shares, int(vol_avg20 * target_pct_of_volume / 100))
+            
+            # --- SUPER POWER 1: SECTOR & EARNINGS CHECK (with caching) ---
+            # Use cached sector mapping for speed
+            sector = SectorMapper.get_sector(t)
+            
+            # Use cached earnings calendar
             earnings_call = "Unknown"
-            sector = "Unknown"
+            is_blackout, blackout_reason = EarningsCalendar.is_in_blackout(
+                t, self.earnings_blackout_days, self.earnings_post_days
+            )
             
-            # Only fetch info for valid setups (Optimizes speed)
+            earnings_date_obj, days_to = EarningsCalendar.get_earnings_date(t)
+            if earnings_date_obj and days_to is not None:
+                earnings_call = f"{earnings_date_obj.date().isoformat() if hasattr(earnings_date_obj, 'date') else str(earnings_date_obj)[:10]} ({days_to:+d}d)"
+            
+            if is_blackout:
+                candidate = self._candidate_snapshot(
+                    t,
+                    strategy_name,
+                    c,
+                    trigger,
+                    stop,
+                    target,
+                    final_res,
+                    rr_ratio,
+                    regime_score=regime_score,
+                    wf_metrics=wf_metrics if self.wf_results else None,
+                    reason="Earnings Risk",
+                    min_win_rate=min_win_rate_breakout if strategy_name.startswith("BREAKOUT") else min_win_rate_dip,
+                    min_pf=min_pf_breakout if strategy_name.startswith("BREAKOUT") else min_pf_dip,
+                    min_trades=min_trades_breakout if strategy_name.startswith("BREAKOUT") else min_trades_dip,
+                    min_expectancy=min_expectancy_breakout if strategy_name.startswith("BREAKOUT") else min_expectancy_dip,
+                    min_rr=min_rr_breakout if strategy_name.startswith("BREAKOUT") else min_rr_dip,
+                    oos_metrics=oos_metrics,
+                )
+                return None, "Earnings Risk", candidate
+            
+            # Valuation check (optional - only if we already have info)
             try:
-                # Use partial fetch or cache if possible, but for now specific call is ok for <10 items
                 ticker_obj = yf.Ticker(t)
                 t_info = ticker_obj.info or {}
-                sector = t_info.get('sector', 'Unknown')
-                
-                # Basic Valuation Check
                 fwd_pe = t_info.get('forwardPE', 0)
-                if fwd_pe and fwd_pe < 40: score += 5 # Value boost
-
-                earnings_date = _extract_earnings_date(ticker_obj, t_info)
-                if earnings_date:
-                    today = datetime.now().date()
-                    days_to = (earnings_date - today).days
-                    earnings_call = f"{earnings_date.isoformat()} ({days_to:+d}d)"
-                    if -self.earnings_post_days <= days_to <= self.earnings_blackout_days:
-                        candidate = self._candidate_snapshot(
-                            t,
-                            strategy_name,
-                            c,
-                            trigger,
-                            stop,
-                            target,
-                            final_res,
-                            rr_ratio,
-                            regime_score=regime_score,
-                            wf_metrics=wf_metrics if self.wf_results else None,
-                            reason="Earnings Risk",
-                            min_win_rate=min_win_rate_breakout if strategy_name.startswith("BREAKOUT") else min_win_rate_dip,
-                            min_pf=min_pf_breakout if strategy_name.startswith("BREAKOUT") else min_pf_dip,
-                            min_trades=min_trades_breakout if strategy_name.startswith("BREAKOUT") else min_trades_dip,
-                            min_expectancy=min_expectancy_breakout if strategy_name.startswith("BREAKOUT") else min_expectancy_dip,
-                            min_rr=min_rr_breakout if strategy_name.startswith("BREAKOUT") else min_rr_dip,
-                            oos_metrics=oos_metrics,
-                        )
-                        return None, "Earnings Risk", candidate
-                
-            except: pass
+                if fwd_pe and fwd_pe < 40: 
+                    score += 5  # Value boost
+            except: 
+                pass
             
             # --- SUPER POWER 2: GOLDEN RATIO FILTER (R:R) ---
             reward_per_share = target - trigger
@@ -2086,42 +3208,65 @@ class TitanBrain:
                 )
                 return None, "Bad Risk/Reward", candidate
             
-            # Final Note Construction
-            note_str = f"Hist: {final_res['trades']} trades"
+            # === STATISTICAL CONFIDENCE ANALYSIS ===
+            # Get walk-forward pass rate for confidence calculation
+            wf_pass_rate = None
+            oos_pf_val = None
+            if self.wf_results:
+                wf = self.wf_results.get(t, {})
+                wf_m = _wf_metrics_for_strategy(wf, strategy_name)
+                wf_pass_rate = wf_m.get("pass_rate")
+                oos_m = _oos_metrics_for_strategy(wf, strategy_name)
+                oos_pf_val = oos_m.get("pf")
+            
+            # Calculate statistical confidence
+            trades_list = final_res.get('trades_list', [])
+            stat_conf = StatisticalConfidenceScorer.calculate_confidence(
+                trades=final_res['trades'],
+                win_rate=final_res['win_rate'],
+                profit_factor=final_res['pf'],
+                expectancy=final_res.get('expectancy', 0),
+                wf_pass_rate=wf_pass_rate,
+                oos_pf=oos_pf_val,
+            )
+            confidence_score = stat_conf['score']
+            confidence_grade = stat_conf['grade']
+            
+            # Calculate t-statistic for statistical significance
+            t_stat = StatisticalConfidenceScorer.calculate_t_statistic(trades_list)
+            
+            # Analyze trend quality
+            trend_analysis = TREND_ANALYZER.analyze(df, final_res)
+            trend_grade = trend_analysis['trend_grade']
+            
+            # Build note string
+            note_str = f"N={final_res['trades']}"
             if regime_score is not None:
                 note_str += f" | Reg:{regime_score:.2f}"
-            if rr_ratio >= 3.0: note_str += " | 3R+ GEM"
+            note_str += f" | Conf:{confidence_grade}"
+            note_str += f" | Trend:{trend_grade}"
+            if t_stat >= 2.0:
+                note_str += " | SIG"  # Statistically significant
+            if rr_ratio >= 3.0:
+                note_str += " | 3R+"
+            if not stat_conf['tradeable']:
+                note_str += " | WEAK"  # Not meeting minimum statistical bar
             
-            # --- AI ENHANCEMENT (ML, Options Flow, Sentiment) ---
-            ai_results = AI_ENHANCER.analyze(t, df, final_res)
-            ml_score = ai_results['ml_score']
-            options_flow = ai_results['options_flow']
-            sentiment = ai_results['sentiment']
-            ai_boost = ai_results['ai_boost']
-            
-            # Boost score with AI results
-            score += ai_boost
-            
-            # Add AI info to note
-            if ml_score >= 70:
-                note_str += f" | ML:{ml_score:.0f}🔥"
-            elif ml_score >= 60:
-                note_str += f" | ML:{ml_score:.0f}"
-            
-            if options_flow == "BULLISH":
-                note_str += " | Opts:📈"
-            elif options_flow == "BEARISH":
-                note_str += " | Opts:📉"
-            
-            if sentiment == "BULLISH":
-                note_str += " | News:📰+"
-            elif sentiment == "BEARISH":
-                note_str += " | News:📰-"
+            # Adjust score based on statistical confidence
+            score = final_res['win_rate'] + (final_res['pf'] * 10)
+            if mkt_status == "BULL":
+                score += 10
+            # Bonus for statistical significance
+            if t_stat >= 2.0:
+                score += 10
+            if confidence_grade in ['A', 'B']:
+                score += 5
             
             return TitanSetup(
                 t, strategy_name, c, trigger, stop, target, shares,
                 final_res['win_rate'], final_res['pf'], kelly*100, score, sector, 
-                earnings_call, note_str, ml_score, options_flow, sentiment, ai_boost
+                earnings_call, note_str, confidence_score, confidence_grade, 
+                trend_grade, t_stat
             ), "Passed", None
 
         except Exception:
@@ -2132,19 +3277,59 @@ class TitanBrain:
     def scan(self, max_workers=10, near_miss_report=False, near_miss_top=DEFAULT_NEAR_MISS_TOP):
         tickers, data = self.get_data()
         spy_close = None
+        spy_df = None
         if isinstance(data.columns, pd.MultiIndex) and "SPY" in data.columns.levels[0]:
             spy_df = data["SPY"].dropna()
             if "Close" in spy_df:
                 spy_close = spy_df["Close"]
         
+        # =====================================================================
+        # DATA FRESHNESS CHECK - Critical for real trading
+        # =====================================================================
+        if spy_df is not None:
+            is_fresh, age, freshness_msg = DataValidator.check_data_freshness(spy_df)
+            
+            print(f"\n{'='*60}")
+            print(f"  DATA STATUS")
+            print(f"{'='*60}")
+            
+            if is_fresh:
+                print(f"  [OK] {freshness_msg}")
+            else:
+                print(f"  [WARNING] {freshness_msg}")
+                print(f"  ")
+                print(f"  !!! DATA IS STALE - NOT SUITABLE FOR LIVE TRADING !!!")
+                print(f"  Last data: {spy_df.index[-1]}")
+                print(f"  ")
+                print(f"  Options:")
+                print(f"    1. Run with --force-refresh-cache to download fresh data")
+                print(f"    2. For real trading, use a real-time data source")
+                print(f"  ")
+                
+                # For production, you might want to abort here
+                # return [], {"Stale Data": 1}, []
+        
         # 1. Check Market
         regime = MarketRegime(data)
-        mkt_status, mkt_score = regime.analyze_spy()
-        print(f"\n=== MARKET STATUS: {mkt_status} (Score: {mkt_score}) ===")
-        if mkt_score == 0:
-            print("!!! MARKET IS IN BEAR TREND. CAUTION ADVISED. !!!")
+        mkt_status, mkt_score, vix_level = regime.analyze_spy()
         
-        print("\nScanning & Validating (v5 Reality Check)...")
+        print(f"\n{'='*60}")
+        print(f"  MARKET STATUS: {mkt_status}")
+        print(f"  Market Score: {mkt_score:.2f}")
+        if vix_level is not None:
+            print(f"  VIX Level: {vix_level:.1f}")
+        print(f"{'='*60}")
+        
+        # VIX PANIC CHECK - NO NEW POSITIONS
+        if vix_level is not None and vix_level > VIX_PANIC_THRESHOLD:
+            print(f"\n!!! VIX PANIC ({vix_level:.1f} > {VIX_PANIC_THRESHOLD}) - NO NEW POSITIONS ALLOWED !!!")
+            print("Wait for VIX to settle below panic threshold before taking new trades.")
+            return [], {"VIX Panic": 1}, []
+        
+        if mkt_score == 0:
+            print("\n!!! MARKET IS IN BEAR TREND. NO NEW LONG POSITIONS RECOMMENDED. !!!")
+        
+        print("\nScanning & Validating (Production Mode)...")
         print(f"Analyzing {len(tickers)} stocks in parallel (Max {max_workers} workers)...")
         
         results = []
@@ -2319,6 +3504,663 @@ def addToPortfolio(setups):
         print(f"    (Size: {entry['shares']} shares)")
 
 
+# =============================================================================
+# PAPER TRADE TRACKER - Track performance before going live
+# =============================================================================
+AUTO_TRACK_TOP_N = 3  # Automatically track top N signals
+
+
+# =============================================================================
+# AUTOMATIC SIGNAL TRACKER - Tracks signals without manual intervention
+# =============================================================================
+class SignalTracker:
+    """
+    Automatically tracks signals and their outcomes.
+    No manual intervention needed - just run the scanner.
+    """
+    
+    def __init__(self, file_path=SIGNAL_TRACKER_FILE):
+        self.file_path = file_path
+        self._load()
+    
+    def _load(self):
+        """Load tracking data."""
+        self.data = {
+            "active_signals": {},
+            "completed_signals": [],
+            "stats": {
+                "total_signals": 0,
+                "wins": 0,
+                "losses": 0,
+                "total_pnl_pct": 0.0,
+                "started": None,
+            }
+        }
+        if os.path.exists(self.file_path):
+            try:
+                with open(self.file_path, "r") as f:
+                    self.data = json.load(f)
+            except Exception:
+                pass
+    
+    def _save(self):
+        """Save tracking data."""
+        try:
+            with open(self.file_path, "w") as f:
+                json.dump(self.data, f, indent=2, default=str)
+        except Exception as e:
+            print(f"Warning: Could not save signal tracker: {e}")
+    
+    def add_signal(self, setup, current_price):
+        """Add a new signal to track."""
+        if self.data["stats"]["started"] is None:
+            self.data["stats"]["started"] = datetime.now().isoformat()
+        
+        ticker = setup.ticker
+        
+        if ticker in self.data["active_signals"]:
+            existing = self.data["active_signals"][ticker]
+            existing["last_seen"] = datetime.now().isoformat()
+            existing["current_price"] = current_price
+            first_seen = datetime.fromisoformat(existing["first_seen"])
+            existing["days_tracked"] = (datetime.now() - first_seen).days
+            self._save()
+            return "updated"
+        
+        signal = {
+            "ticker": ticker,
+            "strategy": setup.strategy,
+            "first_seen": datetime.now().isoformat(),
+            "last_seen": datetime.now().isoformat(),
+            "entry_price": setup.trigger,
+            "current_price": current_price,
+            "stop": setup.stop,
+            "target": setup.target,
+            "win_rate": setup.win_rate,
+            "profit_factor": setup.profit_factor,
+            "t_statistic": setup.t_statistic,
+            "confidence_grade": setup.confidence_grade,
+            "status": "WATCHING",
+            "triggered_price": None,
+            "triggered_date": None,
+            "days_tracked": 0,
+        }
+        
+        self.data["active_signals"][ticker] = signal
+        self._save()
+        return "added"
+    
+    def update_prices(self, price_dict):
+        """Update current prices and check for exits."""
+        now = datetime.now()
+        
+        for ticker, signal in list(self.data["active_signals"].items()):
+            if ticker not in price_dict:
+                continue
+            
+            current_price = price_dict[ticker]
+            signal["current_price"] = current_price
+            signal["last_seen"] = now.isoformat()
+            
+            if signal["status"] == "WATCHING":
+                if current_price >= signal["entry_price"] * 0.995:
+                    signal["status"] = "TRIGGERED"
+                    signal["triggered_price"] = current_price
+                    signal["triggered_date"] = now.isoformat()
+            
+            if signal["status"] == "TRIGGERED":
+                entry = signal["triggered_price"]
+                
+                if current_price <= signal["stop"]:
+                    pnl_pct = (current_price - entry) / entry * 100
+                    self._close_signal(ticker, current_price, "STOP", pnl_pct)
+                elif current_price >= signal["target"]:
+                    pnl_pct = (current_price - entry) / entry * 100
+                    self._close_signal(ticker, current_price, "TARGET", pnl_pct)
+            
+            first_seen = datetime.fromisoformat(signal["first_seen"])
+            days_watching = (now - first_seen).days
+            signal["days_tracked"] = days_watching
+            
+            if signal["status"] == "WATCHING" and days_watching > 10:
+                self._close_signal(ticker, current_price, "EXPIRED", 0)
+        
+        self._save()
+    
+    def _close_signal(self, ticker, exit_price, reason, pnl_pct):
+        """Close a signal and record result."""
+        if ticker not in self.data["active_signals"]:
+            return
+        
+        signal = self.data["active_signals"].pop(ticker)
+        
+        # Send notification
+        entry = signal.get("triggered_price") or signal.get("entry_price")
+        if reason == "STOP":
+            NotificationManager.notify_stop_hit(ticker, entry, exit_price, pnl_pct)
+        elif reason == "TARGET":
+            NotificationManager.notify_target_hit(ticker, entry, exit_price, pnl_pct)
+        signal["exit_price"] = exit_price
+        signal["exit_date"] = datetime.now().isoformat()
+        signal["exit_reason"] = reason
+        signal["pnl_pct"] = pnl_pct
+        signal["status"] = "CLOSED"
+        
+        self.data["completed_signals"].append(signal)
+        
+        if reason in ["STOP", "TARGET"]:
+            self.data["stats"]["total_signals"] += 1
+            self.data["stats"]["total_pnl_pct"] += pnl_pct
+            if pnl_pct > 0:
+                self.data["stats"]["wins"] += 1
+            else:
+                self.data["stats"]["losses"] += 1
+        
+        if len(self.data["completed_signals"]) > 100:
+            self.data["completed_signals"] = self.data["completed_signals"][-100:]
+        
+        self._save()
+    
+    def get_active_signals(self):
+        """Get list of active signals."""
+        return self.data["active_signals"]
+    
+    def print_status(self):
+        """Print tracking status."""
+        active = self.data["active_signals"]
+        stats = self.data["stats"]
+        
+        print("\n" + "="*70)
+        print("  AUTO-TRACKED SIGNALS")
+        print("="*70)
+        
+        if not active:
+            print("  No signals currently being tracked.")
+            print("  (Top 3 signals are auto-tracked each run)")
+        else:
+            print(f"  {'Ticker':<8} {'Status':<10} {'Entry':>10} {'Current':>10} {'P&L':>8} {'Days':>5} {'Grade'}")
+            print("-"*70)
+            
+            for ticker, sig in active.items():
+                entry = sig.get("triggered_price") or sig["entry_price"]
+                current = sig.get("current_price", entry)
+                if sig["status"] == "TRIGGERED":
+                    pnl = (current - entry) / entry * 100
+                    pnl_str = f"{pnl:+.1f}%"
+                else:
+                    pnl_str = "-"
+                
+                grade = sig.get("confidence_grade", "?")
+                print(f"  {ticker:<8} {sig['status']:<10} ${entry:>9.2f} ${current:>9.2f} {pnl_str:>8} {sig['days_tracked']:>5}d   {grade}")
+        
+        print("-"*70)
+        
+        total = stats["total_signals"]
+        if total > 0:
+            win_rate = stats["wins"] / total * 100
+            avg_pnl = stats["total_pnl_pct"] / total
+            print(f"  Completed: {total} trades | {win_rate:.0f}% win rate | {avg_pnl:+.2f}% avg")
+        
+        print("="*70)
+
+
+# =============================================================================
+# DATA VALIDATOR - Ensure data quality before trading
+# =============================================================================
+class DataValidator:
+    """
+    Validates data quality before making trading decisions.
+    Bad data = bad trades = lost money.
+    """
+    
+    @staticmethod
+    def check_data_freshness(df, max_age_minutes=MAX_DATA_AGE_MINUTES):
+        """
+        Check if data is fresh enough for trading.
+        Returns: (is_fresh: bool, age_minutes: float, warning: str)
+        """
+        if df is None or df.empty:
+            return False, float('inf'), "No data available"
+        
+        try:
+            last_date = df.index[-1]
+            if isinstance(last_date, str):
+                last_date = pd.to_datetime(last_date)
+            
+            now = datetime.now()
+            
+            # For daily data, check if it's from today (or yesterday if before market open)
+            if hasattr(last_date, 'date'):
+                data_date = last_date.date() if hasattr(last_date, 'date') else last_date
+            else:
+                data_date = pd.to_datetime(last_date).date()
+            
+            today = now.date()
+            yesterday = (now - timedelta(days=1)).date()
+            
+            # Market hours check (9:30 AM - 4:00 PM ET)
+            market_open = now.replace(hour=9, minute=30, second=0)
+            
+            if data_date == today:
+                return True, 0, "Data is from today"
+            elif data_date == yesterday:
+                # Acceptable if it's before market open
+                if now < market_open:
+                    return True, 0, "Data is from yesterday (pre-market)"
+                else:
+                    age = (now - datetime.combine(yesterday, datetime.min.time())).total_seconds() / 60
+                    return age < max_age_minutes * 60, age, f"Data is from yesterday"
+            else:
+                days_old = (today - data_date).days
+                return False, days_old * 24 * 60, f"Data is {days_old} days old - TOO STALE"
+        except Exception as e:
+            return False, float('inf'), f"Could not verify data freshness: {e}"
+    
+    @staticmethod
+    def check_for_splits_dividends(df, lookback=5):
+        """
+        Check for potential stock splits or large dividends that could affect analysis.
+        Large overnight gaps (>20%) often indicate corporate actions.
+        """
+        warnings = []
+        
+        if df is None or len(df) < lookback + 1:
+            return warnings
+        
+        try:
+            opens = df['Open'].iloc[-lookback:]
+            prev_closes = df['Close'].shift(1).iloc[-lookback:]
+            
+            overnight_changes = (opens - prev_closes) / prev_closes
+            
+            for i, change in enumerate(overnight_changes):
+                if abs(change) > 0.20:  # 20%+ overnight change
+                    date_idx = df.index[-lookback + i]
+                    warnings.append(f"Large overnight move ({change*100:.1f}%) on {date_idx} - possible split/dividend")
+        except Exception:
+            pass
+        
+        return warnings
+    
+    @staticmethod
+    def check_liquidity(df, min_dollar_vol=MIN_AVG_DOLLAR_VOLUME, min_volume=MIN_AVG_VOLUME):
+        """
+        Check if stock has sufficient liquidity for trading.
+        Returns: (is_liquid: bool, avg_dollar_vol: float, warning: str)
+        """
+        if df is None or len(df) < 20:
+            return False, 0, "Insufficient data for liquidity check"
+        
+        try:
+            avg_volume = df['Volume'].iloc[-20:].mean()
+            avg_price = df['Close'].iloc[-20:].mean()
+            avg_dollar_vol = avg_volume * avg_price
+            
+            if avg_dollar_vol < min_dollar_vol:
+                return False, avg_dollar_vol, f"Avg dollar volume ${avg_dollar_vol/1e6:.1f}M < ${min_dollar_vol/1e6:.1f}M required"
+            
+            if avg_volume < min_volume:
+                return False, avg_dollar_vol, f"Avg volume {avg_volume/1000:.0f}K < {min_volume/1000:.0f}K required"
+            
+            return True, avg_dollar_vol, "Liquidity OK"
+        except Exception as e:
+            return False, 0, f"Liquidity check failed: {e}"
+    
+    @staticmethod
+    def calculate_realistic_slippage(shares, avg_volume, is_breakout=True):
+        """
+        Calculate realistic slippage based on order size relative to volume.
+        Larger orders relative to volume = more slippage.
+        """
+        if avg_volume <= 0:
+            return 0.01  # 1% default for unknown liquidity
+        
+        # What percentage of daily volume is our order?
+        pct_of_volume = (shares / avg_volume) * 100
+        
+        # Base slippage
+        base_bps = BASE_SLIPPAGE_BREAKOUT_BPS if is_breakout else BASE_SLIPPAGE_DIP_BPS
+        
+        # Volume impact (additional slippage for larger orders)
+        volume_impact_bps = pct_of_volume * VOLUME_IMPACT_FACTOR
+        
+        total_slippage_bps = base_bps + volume_impact_bps
+        
+        # Cap at 2% (beyond this, the trade is probably not worth it)
+        return min(total_slippage_bps / 10000, 0.02)
+    
+    @staticmethod
+    def max_position_size(avg_volume, price, max_pct_of_volume=MAX_POSITION_PCT_OF_VOLUME):
+        """
+        Calculate maximum position size based on liquidity.
+        Never be more than X% of daily volume.
+        """
+        if avg_volume <= 0 or price <= 0:
+            return 0
+        
+        max_shares = int(avg_volume * (max_pct_of_volume / 100))
+        return max_shares
+
+
+# =============================================================================
+# PRE-TRADE CHECKLIST - Professional traders use these
+# =============================================================================
+class PreTradeChecklist:
+    """
+    Systematic checklist before taking any trade.
+    Professionals never skip this.
+    """
+    
+    def __init__(self, setup, df, risk_manager, data_validator=DataValidator):
+        self.setup = setup
+        self.df = df
+        self.risk_mgr = risk_manager
+        self.validator = data_validator
+        self.checks = []
+        self.passed = True
+        self.warnings = []
+    
+    def run_all_checks(self):
+        """Run complete pre-trade checklist."""
+        self.checks = []
+        self.warnings = []
+        self.passed = True
+        
+        # 1. Data Quality Checks
+        self._check_data_freshness()
+        self._check_data_quality()
+        
+        # 2. Liquidity Checks
+        self._check_liquidity()
+        self._check_position_size_vs_volume()
+        
+        # 3. Risk Checks
+        self._check_portfolio_risk()
+        self._check_position_risk()
+        
+        # 4. Setup Quality Checks
+        self._check_statistical_significance()
+        self._check_risk_reward()
+        
+        # 5. Market Condition Checks
+        self._check_earnings_proximity()
+        self._check_market_hours()
+        
+        return self.passed, self.checks, self.warnings
+    
+    def _add_check(self, name, passed, detail):
+        status = "PASS" if passed else "FAIL"
+        self.checks.append({"name": name, "status": status, "detail": detail})
+        if not passed:
+            self.passed = False
+    
+    def _add_warning(self, warning):
+        self.warnings.append(warning)
+    
+    def _check_data_freshness(self):
+        is_fresh, age, msg = self.validator.check_data_freshness(self.df)
+        self._add_check("Data Freshness", is_fresh, msg)
+        if not is_fresh:
+            self._add_warning(f"STALE DATA: {msg}")
+    
+    def _check_data_quality(self):
+        split_warnings = self.validator.check_for_splits_dividends(self.df)
+        passed = len(split_warnings) == 0
+        detail = "No corporate actions detected" if passed else f"{len(split_warnings)} potential issues"
+        self._add_check("Data Quality", passed, detail)
+        for w in split_warnings:
+            self._add_warning(w)
+    
+    def _check_liquidity(self):
+        is_liquid, dollar_vol, msg = self.validator.check_liquidity(self.df)
+        self._add_check("Liquidity", is_liquid, f"${dollar_vol/1e6:.1f}M avg daily volume")
+        if not is_liquid:
+            self._add_warning(f"LOW LIQUIDITY: {msg}")
+    
+    def _check_position_size_vs_volume(self):
+        try:
+            avg_vol = self.df['Volume'].iloc[-20:].mean()
+            pct_of_vol = (self.setup.qty / avg_vol) * 100 if avg_vol > 0 else 100
+            passed = pct_of_vol <= MAX_POSITION_PCT_OF_VOLUME
+            self._add_check("Size vs Volume", passed, f"{pct_of_vol:.2f}% of daily volume")
+            if not passed:
+                self._add_warning(f"Position is {pct_of_vol:.1f}% of daily volume - reduce size")
+        except Exception:
+            self._add_check("Size vs Volume", False, "Could not calculate")
+    
+    def _check_portfolio_risk(self):
+        can_trade, reason = self.risk_mgr.can_take_new_trade()
+        self._add_check("Portfolio Risk", can_trade, reason)
+        if not can_trade:
+            self._add_warning(f"RISK LIMIT: {reason}")
+    
+    def _check_position_risk(self):
+        try:
+            risk_amt = (self.setup.trigger - self.setup.stop) * self.setup.qty
+            risk_pct = (risk_amt / self.risk_mgr.account_size) * 100
+            passed = risk_pct <= MAX_RISK_PCT_PER_TRADE
+            self._add_check("Position Risk", passed, f"{risk_pct:.2f}% of account")
+            if not passed:
+                self._add_warning(f"Risk {risk_pct:.1f}% exceeds {MAX_RISK_PCT_PER_TRADE}% limit")
+        except Exception:
+            self._add_check("Position Risk", False, "Could not calculate")
+    
+    def _check_statistical_significance(self):
+        passed = self.setup.t_statistic >= 2.0
+        self._add_check("Statistical Significance", passed, f"t-stat: {self.setup.t_statistic:.2f}")
+        if not passed:
+            self._add_warning(f"Edge not statistically significant (t={self.setup.t_statistic:.2f} < 2.0)")
+    
+    def _check_risk_reward(self):
+        try:
+            rr = (self.setup.target - self.setup.trigger) / (self.setup.trigger - self.setup.stop)
+            passed = rr >= 1.5
+            self._add_check("Risk/Reward", passed, f"{rr:.2f}:1")
+        except Exception:
+            self._add_check("Risk/Reward", False, "Could not calculate")
+    
+    def _check_earnings_proximity(self):
+        # Use EarningsCalendar API
+        is_blackout, reason = EarningsCalendar.is_in_blackout(self.setup.ticker)
+        earnings_date, days_until = EarningsCalendar.get_earnings_date(self.setup.ticker)
+        
+        if is_blackout:
+            self._add_check("Earnings Check", False, reason)
+            self._add_warning(f"EARNINGS BLACKOUT: {reason}")
+        elif earnings_date:
+            self._add_check("Earnings Check", True, f"Earnings: {days_until}d away")
+        else:
+            self._add_check("Earnings Check", True, "Earnings date not found - verify manually")
+            self._add_warning("Could not fetch earnings date - verify before trading")
+    
+    def _check_market_hours(self):
+        # Use MarketHours utility
+        market_status = MarketHours.get_market_status_string()
+        is_open = MarketHours.is_market_open()
+        
+        if is_open:
+            self._add_check("Market Hours", True, f"Market is {market_status}")
+        else:
+            self._add_check("Market Hours", True, f"Market is {market_status}")
+            if market_status == "CLOSED":
+                time_until = MarketHours.time_until_market_open()
+                hours_until = time_until.total_seconds() / 3600
+                self._add_warning(f"Market closed - opens in {hours_until:.1f} hours")
+    
+    def print_checklist(self):
+        """Print formatted checklist."""
+        print("\n" + "="*60)
+        print("  PRE-TRADE CHECKLIST")
+        print(f"  {self.setup.ticker} - {self.setup.strategy}")
+        print("="*60)
+        
+        for check in self.checks:
+            status_icon = "[OK]" if check["status"] == "PASS" else "[X]"
+            print(f"  {status_icon} {check['name']}: {check['detail']}")
+        
+        if self.warnings:
+            print("\n  WARNINGS:")
+            for w in self.warnings:
+                print(f"    ! {w}")
+        
+        print("-"*60)
+        if self.passed:
+            print("  RESULT: ALL CHECKS PASSED - Trade may proceed")
+        else:
+            print("  RESULT: CHECKS FAILED - DO NOT TRADE")
+        print("="*60)
+
+
+class PaperTradeTracker:
+    """
+    Track paper trades to validate system before live trading.
+    Recommended: 3-6 months of paper trading before using real money.
+    """
+    
+    def __init__(self, file_path=PAPER_TRADE_FILE):
+        self.file_path = file_path
+        self._load()
+    
+    def _load(self):
+        """Load paper trade history."""
+        self.data = {
+            "open_trades": {},
+            "closed_trades": [],
+            "stats": {
+                "total_trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "total_pnl": 0.0,
+                "started": None,
+            }
+        }
+        if os.path.exists(self.file_path):
+            try:
+                with open(self.file_path, "r") as f:
+                    self.data = json.load(f)
+            except Exception:
+                pass
+    
+    def _save(self):
+        """Save paper trade history."""
+        try:
+            with open(self.file_path, "w") as f:
+                json.dump(self.data, f, indent=2, default=str)
+        except Exception as e:
+            print(f"Warning: Could not save paper trades: {e}")
+    
+    def add_trade(self, setup: TitanSetup):
+        """Add a new paper trade."""
+        if self.data["stats"]["started"] is None:
+            self.data["stats"]["started"] = datetime.now().isoformat()
+        
+        trade = {
+            "ticker": setup.ticker,
+            "strategy": setup.strategy,
+            "entry_date": datetime.now().isoformat(),
+            "entry_price": setup.trigger,
+            "shares": setup.qty,
+            "stop": setup.stop,
+            "target": setup.target,
+            "confidence_grade": setup.confidence_grade,
+            "t_statistic": setup.t_statistic,
+            "status": "OPEN",
+        }
+        
+        self.data["open_trades"][setup.ticker] = trade
+        self._save()
+        print(f"  Paper trade added: {setup.ticker}")
+    
+    def close_trade(self, ticker: str, exit_price: float, reason: str = "manual"):
+        """Close a paper trade and record result."""
+        if ticker not in self.data["open_trades"]:
+            print(f"  Error: {ticker} not in open paper trades")
+            return
+        
+        trade = self.data["open_trades"].pop(ticker)
+        trade["exit_date"] = datetime.now().isoformat()
+        trade["exit_price"] = exit_price
+        trade["exit_reason"] = reason
+        trade["status"] = "CLOSED"
+        
+        # Calculate P&L
+        pnl_per_share = exit_price - trade["entry_price"]
+        pnl_total = pnl_per_share * trade["shares"]
+        pnl_pct = (pnl_per_share / trade["entry_price"]) * 100
+        
+        trade["pnl_total"] = round(pnl_total, 2)
+        trade["pnl_pct"] = round(pnl_pct, 2)
+        
+        # Update stats
+        self.data["stats"]["total_trades"] += 1
+        self.data["stats"]["total_pnl"] += pnl_total
+        if pnl_total > 0:
+            self.data["stats"]["wins"] += 1
+        else:
+            self.data["stats"]["losses"] += 1
+        
+        self.data["closed_trades"].append(trade)
+        self._save()
+        
+        result = "WIN" if pnl_total > 0 else "LOSS"
+        print(f"  Closed {ticker}: {result} ${pnl_total:.2f} ({pnl_pct:.1f}%)")
+    
+    def get_stats(self) -> dict:
+        """Get paper trading statistics."""
+        stats = self.data["stats"]
+        total = stats["total_trades"]
+        
+        if total == 0:
+            return {
+                "total_trades": 0,
+                "win_rate": 0,
+                "total_pnl": 0,
+                "avg_pnl": 0,
+                "open_trades": len(self.data["open_trades"]),
+            }
+        
+        return {
+            "total_trades": total,
+            "wins": stats["wins"],
+            "losses": stats["losses"],
+            "win_rate": (stats["wins"] / total) * 100 if total > 0 else 0,
+            "total_pnl": stats["total_pnl"],
+            "avg_pnl": stats["total_pnl"] / total if total > 0 else 0,
+            "open_trades": len(self.data["open_trades"]),
+            "started": stats["started"],
+        }
+    
+    def print_summary(self):
+        """Print paper trading summary."""
+        stats = self.get_stats()
+        
+        print("\n" + "="*50)
+        print("  PAPER TRADE SUMMARY")
+        print("="*50)
+        
+        if stats["total_trades"] == 0:
+            print("  No closed paper trades yet.")
+            print(f"  Open paper trades: {stats['open_trades']}")
+        else:
+            print(f"  Total Trades: {stats['total_trades']}")
+            print(f"  Win Rate: {stats['win_rate']:.1f}%")
+            print(f"  Total P&L: ${stats['total_pnl']:.2f}")
+            print(f"  Avg P&L per Trade: ${stats['avg_pnl']:.2f}")
+            print(f"  Open Trades: {stats['open_trades']}")
+            if stats.get('started'):
+                print(f"  Tracking Since: {stats['started'][:10]}")
+        
+        print("="*50)
+        
+        # Check if ready for live trading
+        if stats['total_trades'] >= 30 and stats['win_rate'] >= 50:
+            print("  STATUS: May be ready for small live positions")
+        elif stats['total_trades'] >= 20:
+            print("  STATUS: Continue paper trading, need 30+ trades")
+        else:
+            print("  STATUS: Keep paper trading (need 30+ trades minimum)")
+
+
 def main():
     # Default config file - no need for --config flag anymore
     DEFAULT_CONFIG = "titan_config.json"
@@ -2461,6 +4303,36 @@ def main():
         action="store_true",
         help="Disable timestamped output files (keeps only latest versions).",
     )
+    parser.add_argument(
+        "--paper-trade",
+        dest="paper_trade",
+        action="store_true",
+        help="Enable paper trade mode (tracks simulated trades).",
+    )
+    parser.add_argument(
+        "--paper-stats",
+        dest="paper_stats",
+        action="store_true",
+        help="Show paper trading statistics and exit.",
+    )
+    parser.add_argument(
+        "--schedule",
+        dest="schedule_mode",
+        action="store_true",
+        help="Run in scheduled mode (scans at market open and close).",
+    )
+    parser.add_argument(
+        "--dashboard",
+        dest="show_dashboard",
+        action="store_true",
+        help="Generate and display performance dashboard.",
+    )
+    parser.add_argument(
+        "--stats",
+        dest="show_stats",
+        action="store_true",
+        help="Show performance statistics and exit.",
+    )
 
     config = _load_config(pre_args.config)
     if config:
@@ -2473,6 +4345,101 @@ def main():
     log_file = None if args.no_log_file else (args.log_file or output_paths["log_file"])
     global LOGGER
     LOGGER = setup_logging(args.log_level, log_file=log_file)
+    
+    # Paper trade stats mode
+    if getattr(args, 'paper_stats', False):
+        tracker = PaperTradeTracker()
+        tracker.print_summary()
+        return
+    
+    # Performance stats mode
+    if getattr(args, 'show_stats', False):
+        PerformanceDashboard.print_stats()
+        return
+    
+    # Dashboard mode
+    if getattr(args, 'show_dashboard', False):
+        print("\n  Generating Performance Dashboard...")
+        PerformanceDashboard.print_stats()
+        if PerformanceDashboard.generate():
+            # Try to open the dashboard image
+            if sys.platform == 'win32':
+                try:
+                    os.startfile(DASHBOARD_FILE)
+                except Exception:
+                    pass
+        return
+    
+    # Scheduled scanning mode
+    if getattr(args, 'schedule_mode', False):
+        def run_scan():
+            # Import main without schedule flag to avoid recursion
+            import sys
+            original_argv = sys.argv.copy()
+            # Remove --schedule from args
+            sys.argv = [a for a in sys.argv if a != '--schedule']
+            try:
+                main()
+            except Exception as e:
+                print(f"Scan error: {e}")
+            finally:
+                sys.argv = original_argv
+        
+        print("\n" + "="*60)
+        print("  SCHEDULED SCANNING MODE")
+        print("="*60)
+        print(f"  Market Status: {MarketHours.get_market_status_string()}")
+        print(f"  Scans will run at:")
+        print(f"    - 9:35 AM ET (after market open)")
+        print(f"    - 3:55 PM ET (before market close)")
+        print("  Press Ctrl+C to stop.")
+        print("="*60)
+        
+        # Run initial scan
+        print("\n  Running initial scan...")
+        run_scan()
+        
+        # Enter scheduler loop
+        last_scan_date = None
+        scanned_open = False
+        scanned_close = False
+        
+        try:
+            while True:
+                now = MarketHours.get_eastern_time()
+                today = now.date() if hasattr(now, 'date') else date.today()
+                
+                # Reset flags on new day
+                if last_scan_date != today:
+                    last_scan_date = today
+                    scanned_open = False
+                    scanned_close = False
+                
+                # Skip weekends
+                if now.weekday() >= 5:
+                    time.sleep(60)
+                    continue
+                
+                hour = now.hour
+                minute = now.minute
+                
+                # Market open scan (9:35 AM)
+                if not scanned_open and hour == 9 and 35 <= minute < 40:
+                    print(f"\n[{now.strftime('%H:%M')}] Running MARKET OPEN scan...")
+                    run_scan()
+                    scanned_open = True
+                
+                # Market close scan (3:55 PM)
+                if not scanned_close and hour == 15 and 55 <= minute < 60:
+                    print(f"\n[{now.strftime('%H:%M')}] Running MARKET CLOSE scan...")
+                    run_scan()
+                    scanned_close = True
+                
+                time.sleep(30)  # Check every 30 seconds
+                
+        except KeyboardInterrupt:
+            print("\n  Scheduler stopped.")
+        return
 
     try:
         args_dump = dict(vars(args))
@@ -2485,12 +4452,57 @@ def main():
     except Exception:
         LOGGER.warning("Failed to write run_config.json")
 
-    print("\n$$ TITAN TRADE v6.0 (GUARDIAN EDITION) $$")
-    print("----------------------------------------------")
-    LOGGER.info("Run started")
+    # Show market status
+    market_status = MarketHours.get_market_status_string()
+    
+    print("\n" + "="*60)
+    print("  TITAN TRADE v7.0 - PRODUCTION MODE")
+    print("  Statistical Validation + Risk Management")
+    print("="*60)
+    print(f"  Market Status: {market_status}")
+    print(f"  Min Trades Required: {args.min_trades_breakout} (statistical significance)")
+    print(f"  Risk Per Trade: ${args.risk_per_trade:.0f}")
+    print(f"  Max Positions: {MAX_POSITIONS}")
+    print(f"  Max Drawdown Limit: {MAX_DRAWDOWN_PCT}%")
+    print("="*60)
+    
+    # Initialize signal tracker and show current status
+    signal_tracker = SignalTracker()
+    if signal_tracker.get_active_signals():
+        signal_tracker.print_status()
+    
+    LOGGER.info("Run started - Production Mode")
     LOGGER.info("Output dir: %s", args.output_dir)
     if args.safe_mode:
-        LOGGER.info("Safe mode: enabled (conservative filters applied)")
+        LOGGER.info("Safe mode: ENABLED (strict statistical filters)")
+    
+    # Initialize and check risk manager
+    risk_mgr = PortfolioRiskManager(
+        account_size=args.account_size,
+    )
+    
+    # Load current portfolio for risk check
+    open_positions = {}
+    if os.path.exists(PORTFOLIO_FILE):
+        try:
+            with open(PORTFOLIO_FILE, "r") as f:
+                open_positions = json.load(f)
+        except Exception:
+            pass
+    
+    risk_status = risk_mgr.get_risk_status(open_positions)
+    
+    print(f"\n  RISK STATUS:")
+    print(f"    Current Drawdown: {risk_status['drawdown_pct']:.1f}% (max: {MAX_DRAWDOWN_PCT}%)")
+    print(f"    Daily P&L: {-risk_status['daily_loss_pct']:.1f}%")
+    print(f"    Portfolio Heat: {risk_status['portfolio_heat_pct']:.1f}% (max: {PORTFOLIO_HEAT_MAX}%)")
+    print(f"    Position Size Scalar: {risk_status['position_size_scalar']:.0%}")
+    
+    if not risk_status['can_trade']:
+        print(f"\n  !!! TRADING BLOCKED: {risk_status['reason']} !!!")
+        print("  Wait for conditions to improve before taking new trades.")
+        LOGGER.warning("Trading blocked: %s", risk_status['reason'])
+        return
 
     tickers_override = _parse_tickers(args.tickers)
     tickers_override += _load_tickers_from_file(args.tickers_file)
@@ -2584,34 +4596,30 @@ def main():
         
         # UI CLEAR & HEADER
         print("\n" * 3)
-        print("="*60)
-        print(f"  TITAN GUARDIAN v6.0 - RESULT SUMMARY")
-        print("="*60)
-        print(f"    * 'BUY NOW' = Price has triggered (Active Breakout)")
+        print("="*70)
+        print(f"  TITAN TRADE v7.0 - PRODUCTION MODE")
+        print(f"  Statistical Confidence + Risk Management")
+        print("="*70)
+        print(f"    * 'BUY NOW' = Price has triggered")
         print(f"    * 'PENDING' = Place Buy Stop Order at Trigger Price")
-        print("-" * 60)
+        print(f"    * Conf = Statistical Confidence Grade (A/B/C/D/F)")
+        print(f"    * t-stat >= 2.0 = Statistically significant edge")
+        print("-" * 70)
         
         table = []
         report_rows = max(1, int(args.report_rows))
-        for s in setups[:report_rows]: # Show Top N now
+        for s in setups[:report_rows]:
             # Determine Status
             dist = (s.trigger - s.price) / s.price
             if s.price >= s.trigger:
                 status = "BUY NOW"
             elif dist < 0.01:
-                status = "WARN: NEAR"
+                status = "NEAR"
             else:
                 status = "PENDING"
-            wf_row = brain.wf_results.get(s.ticker, {}) if brain.wf_results else {}
-            badge = _compute_badge(
-                s.strategy,
-                wf_row,
-                brain.min_regime_score,
-                wf_min_trades=brain.wf_min_trades,
-                wf_min_pf=brain.wf_min_pf,
-                wf_min_expectancy=brain.wf_min_expectancy,
-                wf_min_passrate=brain.wf_min_passrate,
-            )
+            
+            # t-statistic indicator
+            sig = "Y" if s.t_statistic >= 2.0 else "N"
 
             table.append([
                 s.ticker, 
@@ -2619,16 +4627,17 @@ def main():
                 f"${s.price:.2f}",
                 f"${s.trigger:.2f}", 
                 status,
-                badge,
+                s.confidence_grade,
+                s.trend_grade,
                 f"{s.win_rate:.0f}%", 
                 f"{s.profit_factor:.2f}",
-                f"{s.kelly:.1f}%",
+                sig,
                 f"${s.stop:.2f}",
                 f"${s.target:.2f}",
-                s.note
+                s.qty
             ])
             
-        print(tabulate(table, headers=["Ticker", "Type", "Price", "Trigger", "Status", "Badge", "Win%", "PF", "Kelly", "Stop", "Target", "Note"], tablefmt="grid"))
+        print(tabulate(table, headers=["Ticker", "Type", "Price", "Trigger", "Status", "Conf", "Trend", "Win%", "PF", "Sig", "Stop", "Target", "Shares"], tablefmt="grid"))
         
         print(
             "\nRecommendation:"
@@ -2636,7 +4645,6 @@ def main():
             f" Dip Win% >= {brain.min_win_rate_dip:.0f}% PF >= {brain.min_pf_dip:.2f}"
         )
         
-        # Interactive Portfolio Add
         # Save CSV results for easy review
         rows = []
         for s in setups:
@@ -2647,10 +4655,16 @@ def main():
                 "Trigger": round(s.trigger, 4),
                 "Stop": round(s.stop, 4),
                 "Target": round(s.target, 4),
+                "Shares": s.qty,
                 "WinRate": round(s.win_rate, 2),
                 "ProfitFactor": round(s.profit_factor, 2),
                 "Kelly": round(s.kelly, 2),
                 "Score": round(s.score, 2),
+                "ConfidenceScore": round(s.confidence_score, 1),
+                "ConfidenceGrade": s.confidence_grade,
+                "TrendGrade": s.trend_grade,
+                "T_Statistic": round(s.t_statistic, 2),
+                "Significant": "Y" if s.t_statistic >= 2.0 else "N",
                 "Sector": s.sector,
                 "EarningsCall": s.earnings_call,
                 "Note": s.note,
@@ -2717,11 +4731,107 @@ def main():
 
         print(f"\nReport saved to {output_paths['scan_txt_latest']} and {output_paths['scan_csv_latest']}")
         LOGGER.info("Reports written to %s", args.output_dir)
-        if args.portfolio:
+        
+        # =================================================================
+        # PRE-TRADE CHECKLIST - Run for top signals
+        # =================================================================
+        print("\n" + "="*60)
+        print("  PRE-TRADE CHECKLIST FOR TOP SIGNALS")
+        print("="*60)
+        
+        # Get the cached data for checklist validation
+        tickers_data, all_data = brain.get_data()
+        
+        for s in setups[:3]:  # Check top 3 signals
+            try:
+                if isinstance(all_data.columns, pd.MultiIndex) and s.ticker in all_data.columns.levels[0]:
+                    ticker_df = all_data[s.ticker].dropna()
+                    checklist = PreTradeChecklist(s, ticker_df, risk_mgr)
+                    passed, checks, warnings = checklist.run_all_checks()
+                    checklist.print_checklist()
+            except Exception as e:
+                print(f"  Could not run checklist for {s.ticker}: {e}")
+        
+        # =================================================================
+        # AUTO-TRACK TOP SIGNALS
+        # =================================================================
+        print("\n" + "="*60)
+        print("  AUTO-TRACKING TOP SIGNALS")
+        print("="*60)
+        
+        for s in setups[:AUTO_TRACK_TOP_N]:
+            result = signal_tracker.add_signal(s, s.price)
+            if result == "added":
+                print(f"  [+] Added {s.ticker} to tracker (Entry: ${s.trigger:.2f})")
+            else:
+                print(f"  [~] Updated {s.ticker} in tracker")
+        
+        # Update prices for all tracked signals using current data
+        tickers_data_for_tracker, all_data_for_tracker = brain.get_data()
+        if all_data_for_tracker is not None and not all_data_for_tracker.empty:
+            price_dict = {}
+            for ticker in signal_tracker.get_active_signals().keys():
+                try:
+                    if isinstance(all_data_for_tracker.columns, pd.MultiIndex):
+                        if ticker in all_data_for_tracker.columns.levels[0]:
+                            ticker_df = all_data_for_tracker[ticker].dropna()
+                            if not ticker_df.empty:
+                                price_dict[ticker] = ticker_df['Close'].iloc[-1]
+                except Exception:
+                    pass
+            if price_dict:
+                signal_tracker.update_prices(price_dict)
+        
+        # Show updated tracker status
+        signal_tracker.print_status()
+        
+        # Paper trade mode - track without real money
+        if getattr(args, 'paper_trade', False) and setups:
+            paper_tracker = PaperTradeTracker()
+            print("\n" + "="*50)
+            print("  PAPER TRADE MODE")
+            print("  Add signals to paper portfolio for tracking")
+            print("="*50)
+            
+            for s in setups[:5]:  # Show top 5
+                print(f"  [{setups.index(s)+1}] {s.ticker} ({s.strategy}) - ${s.trigger:.2f}")
+            
+            print("\n  Enter number to add, or press ENTER to skip:")
+            choice = input("  > ").strip()
+            
+            if choice.isdigit():
+                idx = int(choice) - 1
+                if 0 <= idx < len(setups):
+                    paper_tracker.add_trade(setups[idx])
+            
+            paper_tracker.print_summary()
+        
+        elif args.portfolio:
             addToPortfolio(setups)
         
     else:
-        print("\nNo valid setups found that passed the Reality Check.")
+        print("\nNo valid setups found that passed statistical filters.")
+        print("This is EXPECTED with strict production settings.")
+        print("Review near-miss report for stocks close to qualification.")
+        
+        # Still update tracked signals prices even if no new setups
+        if signal_tracker.get_active_signals():
+            tickers_data_for_tracker, all_data_for_tracker = brain.get_data()
+            if all_data_for_tracker is not None and not all_data_for_tracker.empty:
+                price_dict = {}
+                for ticker in signal_tracker.get_active_signals().keys():
+                    try:
+                        if isinstance(all_data_for_tracker.columns, pd.MultiIndex):
+                            if ticker in all_data_for_tracker.columns.levels[0]:
+                                ticker_df = all_data_for_tracker[ticker].dropna()
+                                if not ticker_df.empty:
+                                    price_dict[ticker] = ticker_df['Close'].iloc[-1]
+                    except Exception:
+                        pass
+                if price_dict:
+                    signal_tracker.update_prices(price_dict)
+            
+            signal_tracker.print_status()
 
     if args.near_miss_report and near_misses:
         try:

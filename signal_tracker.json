@@ -1,0 +1,66 @@
+{
+  "active_signals": {
+    "PSX": {
+      "ticker": "PSX",
+      "strategy": "DIP BUY",
+      "first_seen": "2026-01-28T21:53:48.837865",
+      "last_seen": "2026-01-28T22:16:50.933400",
+      "entry_price": 140.00999450683594,
+      "current_price": 140.00999450683594,
+      "stop": 131.29713439941406,
+      "target": 153.07928466796875,
+      "win_rate": 69.23076923076923,
+      "profit_factor": 4.04739583537826,
+      "t_statistic": 2.1248306262276913,
+      "confidence_grade": "C",
+      "status": "TRIGGERED",
+      "triggered_price": 140.00999450683594,
+      "triggered_date": "2026-01-28T21:53:49.068235",
+      "days_tracked": 0
+    },
+    "EA": {
+      "ticker": "EA",
+      "strategy": "DIP BUY",
+      "first_seen": "2026-01-28T21:53:48.838862",
+      "last_seen": "2026-01-28T22:16:50.933400",
+      "entry_price": 204.3699951171875,
+      "current_price": 204.3699951171875,
+      "stop": 203.64571271623885,
+      "target": 205.45641871861048,
+      "win_rate": 52.17391304347826,
+      "profit_factor": 6.112325096698852,
+      "t_statistic": 1.7626440772101029,
+      "confidence_grade": "C",
+      "status": "TRIGGERED",
+      "triggered_price": 204.3699951171875,
+      "triggered_date": "2026-01-28T21:53:49.068235",
+      "days_tracked": 0
+    },
+    "MDT": {
+      "ticker": "MDT",
+      "strategy": "DIP BUY",
+      "first_seen": "2026-01-28T21:55:40.789043",
+      "last_seen": "2026-01-28T22:16:50.933400",
+      "entry_price": 100.69000244140625,
+      "current_price": 100.69000244140625,
+      "stop": 96.5300053187779,
+      "target": 106.92999812534877,
+      "win_rate": 66.66666666666666,
+      "profit_factor": 2.7744724324120513,
+      "t_statistic": 1.6560347666129382,
+      "confidence_grade": "C",
+      "status": "TRIGGERED",
+      "triggered_price": 100.69000244140625,
+      "triggered_date": "2026-01-28T21:55:40.995528",
+      "days_tracked": 0
+    }
+  },
+  "completed_signals": [],
+  "stats": {
+    "total_signals": 0,
+    "wins": 0,
+    "losses": 0,
+    "total_pnl_pct": 0.0,
+    "started": "2026-01-28T21:53:48.837861"
+  }
+}
