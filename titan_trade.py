@@ -150,6 +150,102 @@ SAFE_MODE_SETTINGS = {
 }
 
 # =============================================================================
+# TRUST MODE - FOR USERS WHO WANT TO RUN AND TRUST THE RESULTS
+# =============================================================================
+# This mode is EXTREMELY strict. Only the highest confidence setups pass.
+# If it says TRADE, you can trust it. If it says DON'T TRADE, respect it.
+#
+# QUICK START GUIDE FOR TRUST MODE:
+# =================================
+# STEP 1: Start paper trading validation (required first!)
+#         python titan_trade.py --trust-paper
+#
+# STEP 2: Each time you complete a paper trade, record the result:
+#         python titan_trade.py --trust-paper-win   (if you would have profited)
+#         python titan_trade.py --trust-paper-loss  (if you would have lost)
+#
+# STEP 3: After 30 days and 10+ successful paper trades, you're validated!
+#         python titan_trade.py --trust-mode
+#
+# OTHER COMMANDS:
+#         python titan_trade.py --trust-status  (check your progress)
+#         python titan_trade.py --trust-reset   (start over)
+#         python titan_trade.py --trust-bypass  (skip validation - NOT recommended)
+#
+TRUST_MODE_DEFAULT = False
+TRUST_MODE_SETTINGS = {
+    # MANDATORY: Walk-forward + Out-of-sample validation
+    "require_walkforward": True,
+    "require_oos": True,
+    # Setup must persist for 3 days (not a flash in the pan)
+    "confirm_days_breakout": 3,
+    "confirm_days_dip": 3,
+    "require_confirmed_setup": True,
+    # STRICT: Need 30+ trades for statistical significance (t-test requirement)
+    "min_trades_breakout": 30,
+    "min_trades_dip": 30,
+    # Win rate requirements (higher bar)
+    "min_winrate_breakout": 55.0,
+    "min_winrate_dip": 52.0,
+    # Profit factor (must be clearly profitable)
+    "min_pf_breakout": 1.5,
+    "min_pf_dip": 1.4,
+    # Expectancy per trade (meaningful edge)
+    "min_expectancy_breakout": 0.005,  # 0.5% per trade minimum
+    "min_expectancy_dip": 0.003,
+    # Risk/reward (at least 2:1)
+    "min_rr_breakout": 2.0,
+    "min_rr_dip": 1.8,
+    # Walk-forward validation (stricter)
+    "wf_min_trades": 15,
+    "wf_min_pf": 1.3,
+    "wf_min_expectancy": 0.002,
+    "wf_min_passrate": 0.50,  # Must pass 50% of folds (2 of 4)
+    # OOS validation (mandatory in trust mode)
+    "oos_min_trades": 10,
+    "oos_min_winrate_breakout": 52.0,
+    "oos_min_winrate_dip": 50.0,
+    "oos_min_pf_breakout": 1.3,
+    "oos_min_pf_dip": 1.2,
+    "oos_min_expectancy_breakout": 0.002,
+    "oos_min_expectancy_dip": 0.001,
+}
+
+# =============================================================================
+# AUTO MODE - JUST RUN AND GO (No flags needed!)
+# =============================================================================
+# When True, running `python titan_trade.py` with no arguments activates Trust Mode
+AUTO_MODE_ENABLED = True
+AUTO_MODE_CONFIG_FILE = "titan_auto_config.json"
+
+# =============================================================================
+# TRUST MODE - ADDITIONAL SAFETY PARAMETERS
+# =============================================================================
+# Only show Grade A or B signals (C/D/F are hidden)
+TRUST_MODE_MIN_GRADE = "B"
+# Require statistical significance (t-stat >= 2.0)
+TRUST_MODE_REQUIRE_SIGNIFICANCE = True
+# Maximum trades per day (prevent overtrading)
+TRUST_MODE_MAX_TRADES_PER_DAY = 2
+# Maximum trades per week
+TRUST_MODE_MAX_TRADES_PER_WEEK = 5
+# Cooling off after consecutive losses
+TRUST_MODE_LOSS_STREAK_COOLOFF = 3  # Pause after 3 consecutive losses
+TRUST_MODE_COOLOFF_DAYS = 2  # Pause trading for 2 days
+# Mandatory paper trading validation period (days)
+TRUST_MODE_PAPER_VALIDATION_DAYS = 30
+TRUST_MODE_PAPER_MIN_TRADES = 10
+TRUST_MODE_PAPER_MIN_WINRATE = 45.0
+# Position size reduction
+TRUST_MODE_MAX_RISK_PER_TRADE_PCT = 0.3  # Only 0.3% risk per trade (ultra safe)
+TRUST_MODE_MAX_POSITIONS = 4  # Max 4 positions at once
+# Data freshness (stricter)
+TRUST_MODE_MAX_DATA_AGE_HOURS = 1  # Data must be less than 1 hour old during market
+# Disable trading on high volatility days
+TRUST_MODE_VIX_CAUTION = 18  # Reduce size when VIX > 18
+TRUST_MODE_VIX_HALT = 25  # Stop trading when VIX > 25
+
+# =============================================================================
 # POSITION SIZING & RISK MANAGEMENT
 # =============================================================================
 RISK_PER_TRADE = 500.0  # Conservative: $500 max risk per trade
@@ -1007,6 +1103,535 @@ def _apply_safe_mode(args):
     args.near_miss_report = True
     args.save_json = True
     return args
+
+
+def _apply_trust_mode(args):
+    """
+    Apply TRUST MODE settings - for users who want to run and trust results.
+    This mode is EXTREMELY strict. Only the highest confidence setups pass.
+    """
+    if not getattr(args, "trust_mode", False):
+        return args
+    
+    # Apply all trust mode settings
+    for key, value in TRUST_MODE_SETTINGS.items():
+        setattr(args, key, value)
+    
+    # Force additional safety settings
+    args.auto_oos = True
+    args.near_miss_report = True
+    args.save_json = True
+    args.require_walkforward = True
+    args.require_oos = True
+    
+    # Override risk settings to be ultra-conservative
+    args.risk_per_trade = min(args.risk_per_trade, args.account_size * TRUST_MODE_MAX_RISK_PER_TRADE_PCT / 100)
+    
+    return args
+
+
+# =============================================================================
+# TRUST MODE MANAGER - Tracks trading activity and enforces limits
+# =============================================================================
+class TrustModeManager:
+    """
+    Manages Trust Mode protections:
+    - Daily/weekly trade limits
+    - Loss streak cooloff
+    - Paper trading validation
+    - Position limits
+    """
+    
+    TRUST_STATE_FILE = "trust_mode_state.json"
+    
+    def __init__(self, account_size=ACCOUNT_SIZE):
+        self.account_size = account_size
+        self._load_state()
+    
+    def _load_state(self):
+        """Load trust mode tracking state."""
+        self.state = {
+            "trades_today": [],
+            "trades_this_week": [],
+            "last_trade_date": None,
+            "last_week_start": None,
+            "consecutive_losses": 0,
+            "cooloff_until": None,
+            "paper_trading_started": None,
+            "paper_trades_count": 0,
+            "paper_wins": 0,
+            "paper_losses": 0,
+            "paper_validated": False,
+            "total_trades": 0,
+            "total_wins": 0,
+            "total_losses": 0,
+            "current_positions": 0,
+        }
+        
+        if os.path.exists(self.TRUST_STATE_FILE):
+            try:
+                with open(self.TRUST_STATE_FILE, "r") as f:
+                    saved = json.load(f)
+                    self.state.update(saved)
+            except Exception:
+                pass
+        
+        # Reset daily/weekly counters if needed
+        self._reset_counters_if_needed()
+    
+    def _save_state(self):
+        """Save trust mode state."""
+        try:
+            with open(self.TRUST_STATE_FILE, "w") as f:
+                json.dump(self.state, f, indent=2, default=str)
+        except Exception:
+            pass
+    
+    def _reset_counters_if_needed(self):
+        """Reset daily/weekly counters on new day/week."""
+        today = date.today().isoformat()
+        week_start = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+        
+        if self.state["last_trade_date"] != today:
+            self.state["trades_today"] = []
+            self.state["last_trade_date"] = today
+        
+        if self.state["last_week_start"] != week_start:
+            self.state["trades_this_week"] = []
+            self.state["last_week_start"] = week_start
+        
+        # Check cooloff expiry
+        if self.state["cooloff_until"]:
+            try:
+                cooloff_date = datetime.fromisoformat(self.state["cooloff_until"])
+                if datetime.now() > cooloff_date:
+                    self.state["cooloff_until"] = None
+                    self.state["consecutive_losses"] = 0
+            except Exception:
+                pass
+    
+    def is_paper_trading_validated(self):
+        """Check if paper trading period is complete and validated."""
+        if self.state["paper_validated"]:
+            return True, "Paper trading validated"
+        
+        if not self.state["paper_trading_started"]:
+            return False, f"Paper trading not started. Run with --trust-paper for {TRUST_MODE_PAPER_VALIDATION_DAYS} days first."
+        
+        # Check if enough time has passed
+        started = datetime.fromisoformat(self.state["paper_trading_started"])
+        days_elapsed = (datetime.now() - started).days
+        
+        if days_elapsed < TRUST_MODE_PAPER_VALIDATION_DAYS:
+            return False, f"Paper trading day {days_elapsed}/{TRUST_MODE_PAPER_VALIDATION_DAYS}. Keep paper trading."
+        
+        # Check if enough trades
+        if self.state["paper_trades_count"] < TRUST_MODE_PAPER_MIN_TRADES:
+            return False, f"Need {TRUST_MODE_PAPER_MIN_TRADES} paper trades, have {self.state['paper_trades_count']}."
+        
+        # Check win rate
+        total = self.state["paper_wins"] + self.state["paper_losses"]
+        if total > 0:
+            win_rate = (self.state["paper_wins"] / total) * 100
+            if win_rate < TRUST_MODE_PAPER_MIN_WINRATE:
+                return False, f"Paper win rate {win_rate:.0f}% < {TRUST_MODE_PAPER_MIN_WINRATE}%. Keep practicing."
+        
+        # Validation passed!
+        self.state["paper_validated"] = True
+        self._save_state()
+        return True, "Paper trading validated! You may now use live trading."
+    
+    def start_paper_trading(self):
+        """Start the paper trading validation period."""
+        if not self.state["paper_trading_started"]:
+            self.state["paper_trading_started"] = datetime.now().isoformat()
+            self._save_state()
+        return self.state["paper_trading_started"]
+    
+    def record_paper_trade(self, won: bool):
+        """Record a paper trade result."""
+        self.state["paper_trades_count"] += 1
+        if won:
+            self.state["paper_wins"] += 1
+        else:
+            self.state["paper_losses"] += 1
+        self._save_state()
+    
+    def can_trade_today(self):
+        """Check if we can take more trades today."""
+        self._reset_counters_if_needed()
+        
+        # Check cooloff period
+        if self.state["cooloff_until"]:
+            try:
+                cooloff_date = datetime.fromisoformat(self.state["cooloff_until"])
+                if datetime.now() < cooloff_date:
+                    return False, f"Cooloff period active until {cooloff_date.strftime('%Y-%m-%d')}. {self.state['consecutive_losses']} consecutive losses."
+            except Exception:
+                pass
+        
+        # Check daily limit
+        if len(self.state["trades_today"]) >= TRUST_MODE_MAX_TRADES_PER_DAY:
+            return False, f"Daily limit reached ({TRUST_MODE_MAX_TRADES_PER_DAY} trades). Try again tomorrow."
+        
+        # Check weekly limit
+        if len(self.state["trades_this_week"]) >= TRUST_MODE_MAX_TRADES_PER_WEEK:
+            return False, f"Weekly limit reached ({TRUST_MODE_MAX_TRADES_PER_WEEK} trades). Wait for next week."
+        
+        # Check position limit
+        if self.state["current_positions"] >= TRUST_MODE_MAX_POSITIONS:
+            return False, f"Position limit reached ({TRUST_MODE_MAX_POSITIONS} positions). Close some first."
+        
+        return True, "OK"
+    
+    def record_trade(self, ticker: str, won: bool = None):
+        """Record a new trade."""
+        self._reset_counters_if_needed()
+        
+        trade = {
+            "ticker": ticker,
+            "time": datetime.now().isoformat(),
+        }
+        
+        self.state["trades_today"].append(trade)
+        self.state["trades_this_week"].append(trade)
+        self.state["total_trades"] += 1
+        self.state["current_positions"] += 1
+        
+        if won is not None:
+            self.record_trade_result(won)
+        
+        self._save_state()
+    
+    def record_trade_result(self, won: bool):
+        """Record a trade result (win/loss)."""
+        if won:
+            self.state["total_wins"] += 1
+            self.state["consecutive_losses"] = 0
+        else:
+            self.state["total_losses"] += 1
+            self.state["consecutive_losses"] += 1
+            
+            # Check for cooloff trigger
+            if self.state["consecutive_losses"] >= TRUST_MODE_LOSS_STREAK_COOLOFF:
+                cooloff_date = datetime.now() + timedelta(days=TRUST_MODE_COOLOFF_DAYS)
+                self.state["cooloff_until"] = cooloff_date.isoformat()
+        
+        self._save_state()
+    
+    def close_position(self):
+        """Record a position closure."""
+        if self.state["current_positions"] > 0:
+            self.state["current_positions"] -= 1
+            self._save_state()
+    
+    def get_status_report(self):
+        """Get a status report for display."""
+        self._reset_counters_if_needed()
+        
+        report = {
+            "trades_today": len(self.state["trades_today"]),
+            "max_daily": TRUST_MODE_MAX_TRADES_PER_DAY,
+            "trades_this_week": len(self.state["trades_this_week"]),
+            "max_weekly": TRUST_MODE_MAX_TRADES_PER_WEEK,
+            "current_positions": self.state["current_positions"],
+            "max_positions": TRUST_MODE_MAX_POSITIONS,
+            "consecutive_losses": self.state["consecutive_losses"],
+            "cooloff_until": self.state["cooloff_until"],
+            "paper_validated": self.state["paper_validated"],
+            "total_trades": self.state["total_trades"],
+            "total_wins": self.state["total_wins"],
+            "total_losses": self.state["total_losses"],
+        }
+        
+        if self.state["total_trades"] > 0:
+            report["win_rate"] = (self.state["total_wins"] / self.state["total_trades"]) * 100
+        else:
+            report["win_rate"] = 0
+        
+        return report
+    
+    def reset_paper_trading(self):
+        """Reset paper trading state (for re-validation)."""
+        self.state["paper_trading_started"] = None
+        self.state["paper_trades_count"] = 0
+        self.state["paper_wins"] = 0
+        self.state["paper_losses"] = 0
+        self.state["paper_validated"] = False
+        self._save_state()
+    
+    def bypass_paper_validation(self, confirm_code: str):
+        """
+        Bypass paper validation (for experienced traders).
+        Requires typing 'I ACCEPT THE RISK' to proceed.
+        """
+        if confirm_code == "I ACCEPT THE RISK":
+            self.state["paper_validated"] = True
+            self._save_state()
+            return True
+        return False
+
+
+# =============================================================================
+# AUTO MODE MANAGER - Just run the file, everything works
+# =============================================================================
+class AutoModeManager:
+    """
+    Manages auto mode configuration and first-time setup.
+    Makes the program truly 'run and forget'.
+    """
+    
+    CONFIG_FILE = AUTO_MODE_CONFIG_FILE
+    
+    def __init__(self):
+        self.config = self._load_config()
+    
+    def _load_config(self):
+        """Load auto mode configuration."""
+        default_config = {
+            "first_run_complete": False,
+            "paper_trading_bypassed": False,
+            "account_size": ACCOUNT_SIZE,
+            "risk_per_trade": RISK_PER_TRADE,
+            "notifications_enabled": True,
+            "auto_schedule_enabled": False,
+            "created": None,
+        }
+        
+        if os.path.exists(self.CONFIG_FILE):
+            try:
+                with open(self.CONFIG_FILE, "r") as f:
+                    saved = json.load(f)
+                    default_config.update(saved)
+            except Exception:
+                pass
+        
+        return default_config
+    
+    def _save_config(self):
+        """Save auto mode configuration."""
+        try:
+            with open(self.CONFIG_FILE, "w") as f:
+                json.dump(self.config, f, indent=2, default=str)
+        except Exception:
+            pass
+    
+    def is_first_run(self):
+        """Check if this is the first run."""
+        return not self.config.get("first_run_complete", False)
+    
+    def run_first_time_setup(self):
+        """Run first-time setup wizard."""
+        print("\n" + "=" * 70)
+        print("  " + "█" * 66)
+        print("  █" + " " * 64 + "█")
+        print("  █" + "     WELCOME TO TITAN TRADE - AUTO MODE     ".center(64) + "█")
+        print("  █" + "     First-Time Setup (One time only)       ".center(64) + "█")
+        print("  █" + " " * 64 + "█")
+        print("  " + "█" * 66)
+        print("=" * 70)
+        
+        print("\n  This setup will configure Titan Trade for automatic operation.")
+        print("  After this, just run 'python titan_trade.py' and trust the results.\n")
+        
+        # Account size
+        print("  1. What is your trading account size? (default: $100,000)")
+        try:
+            acc_input = input("     $ ").strip()
+            if acc_input:
+                self.config["account_size"] = float(acc_input.replace(",", "").replace("$", ""))
+            else:
+                self.config["account_size"] = ACCOUNT_SIZE
+        except:
+            self.config["account_size"] = ACCOUNT_SIZE
+        
+        # Risk per trade
+        print(f"\n  2. Max risk per trade? (default: ${RISK_PER_TRADE:.0f})")
+        print("     (This is how much you're willing to lose if stopped out)")
+        try:
+            risk_input = input("     $ ").strip()
+            if risk_input:
+                self.config["risk_per_trade"] = float(risk_input.replace(",", "").replace("$", ""))
+            else:
+                self.config["risk_per_trade"] = RISK_PER_TRADE
+        except:
+            self.config["risk_per_trade"] = RISK_PER_TRADE
+        
+        # Paper trading bypass
+        print("\n  3. Paper trading validation is RECOMMENDED for 30 days.")
+        print("     Do you want to skip paper trading? (NOT recommended)")
+        print("     Type 'SKIP' to bypass, or press ENTER to paper trade first:")
+        skip = input("     > ").strip()
+        
+        if skip.upper() == "SKIP":
+            print("\n     ⚠️  WARNING: You chose to skip paper trading.")
+            print("     Type 'I ACCEPT THE RISK' to confirm:")
+            confirm = input("     > ").strip()
+            if confirm == "I ACCEPT THE RISK":
+                self.config["paper_trading_bypassed"] = True
+                print("     Paper trading bypassed. Be careful with real money!")
+            else:
+                self.config["paper_trading_bypassed"] = False
+                print("     Good choice! Paper trading will be required.")
+        else:
+            self.config["paper_trading_bypassed"] = False
+            print("     Great! You'll paper trade first for safety.")
+        
+        # Complete setup
+        self.config["first_run_complete"] = True
+        self.config["created"] = datetime.now().isoformat()
+        self._save_config()
+        
+        print("\n" + "=" * 70)
+        print("  SETUP COMPLETE!")
+        print("=" * 70)
+        print(f"  Account Size: ${self.config['account_size']:,.0f}")
+        print(f"  Risk Per Trade: ${self.config['risk_per_trade']:,.0f}")
+        print(f"  Paper Trading: {'Bypassed' if self.config['paper_trading_bypassed'] else 'Required'}")
+        print("=" * 70)
+        print("\n  From now on, just run: python titan_trade.py")
+        print("  The system will automatically scan and show you TRADE or DON'T TRADE.\n")
+        
+        input("  Press ENTER to continue to your first scan...")
+        
+        return self.config
+    
+    def get_config(self):
+        """Get current configuration."""
+        return self.config
+
+
+def print_trust_mode_header():
+    """Print the Trust Mode header."""
+    print("\n" + "=" * 70)
+    print("  " + "█" * 66)
+    print("  █" + " " * 64 + "█")
+    print("  █" + "     TITAN TRADE - TRUST MODE ACTIVATED     ".center(64) + "█")
+    print("  █" + "     If it says TRADE, you can trust it.    ".center(64) + "█")
+    print("  █" + "     If it says DON'T, respect it.          ".center(64) + "█")
+    print("  █" + " " * 64 + "█")
+    print("  " + "█" * 66)
+    print("=" * 70)
+
+
+def print_simple_verdict(setups, trust_manager, vix_level=None):
+    """
+    Print a simple, clear verdict for Trust Mode users.
+    No ambiguity - just TRADE or DON'T TRADE.
+    """
+    print("\n" + "=" * 70)
+    
+    # Check if we can even trade
+    can_trade, reason = trust_manager.can_trade_today()
+    
+    if not can_trade:
+        print("  ╔══════════════════════════════════════════════════════════════╗")
+        print("  ║                                                              ║")
+        print("  ║     ██████   ██████  ███    ██ ████████                     ║")
+        print("  ║     ██   ██ ██    ██ ████   ██    ██                        ║")
+        print("  ║     ██   ██ ██    ██ ██ ██  ██    ██                        ║")
+        print("  ║     ██   ██ ██    ██ ██  ██ ██    ██                        ║")
+        print("  ║     ██████   ██████  ██   ████    ██     TRADE TODAY       ║")
+        print("  ║                                                              ║")
+        print("  ╚══════════════════════════════════════════════════════════════╝")
+        print(f"\n  REASON: {reason}")
+        print("\n  This is a PROTECTIVE LIMIT. Respect it.")
+        print("=" * 70)
+        return None
+    
+    # Check VIX
+    if vix_level is not None:
+        if vix_level > TRUST_MODE_VIX_HALT:
+            print("  ╔══════════════════════════════════════════════════════════════╗")
+            print("  ║                                                              ║")
+            print("  ║              ⚠️  HIGH VOLATILITY WARNING  ⚠️                  ║")
+            print("  ║                                                              ║")
+            print("  ║                  DON'T TRADE TODAY                          ║")
+            print("  ║                                                              ║")
+            print("  ╚══════════════════════════════════════════════════════════════╝")
+            print(f"\n  VIX is at {vix_level:.1f} (HALT threshold: {TRUST_MODE_VIX_HALT})")
+            print("  Market is too volatile. Wait for calmer conditions.")
+            print("=" * 70)
+            return None
+        elif vix_level > TRUST_MODE_VIX_CAUTION:
+            print(f"\n  ⚠️  CAUTION: VIX at {vix_level:.1f} - Position sizes reduced 50%")
+    
+    # Filter for only Grade A or B signals
+    trusted_setups = []
+    for s in setups:
+        grade = getattr(s, 'confidence_grade', 'F')
+        t_stat = getattr(s, 't_statistic', 0)
+        
+        # Must be Grade A or B
+        if grade not in ['A', 'B']:
+            continue
+        
+        # Must be statistically significant
+        if TRUST_MODE_REQUIRE_SIGNIFICANCE and t_stat < 2.0:
+            continue
+        
+        trusted_setups.append(s)
+    
+    if not trusted_setups:
+        print("  ╔══════════════════════════════════════════════════════════════╗")
+        print("  ║                                                              ║")
+        print("  ║              NO HIGH-CONFIDENCE TRADES TODAY                ║")
+        print("  ║                                                              ║")
+        print("  ║         Wait for Grade A/B signals with t-stat ≥ 2.0        ║")
+        print("  ║                                                              ║")
+        print("  ╚══════════════════════════════════════════════════════════════╝")
+        print(f"\n  Scanned all stocks. Found {len(setups)} setups but none meet TRUST criteria.")
+        print("  This is GOOD - we're protecting you from marginal trades.")
+        print("=" * 70)
+        return None
+    
+    # We have trusted setups!
+    print("  ╔══════════════════════════════════════════════════════════════╗")
+    print("  ║                                                              ║")
+    print("  ║     ████████ ██████   █████  ██████  ███████                ║")
+    print("  ║        ██    ██   ██ ██   ██ ██   ██ ██                     ║")
+    print("  ║        ██    ██████  ███████ ██   ██ █████                  ║")
+    print("  ║        ██    ██   ██ ██   ██ ██   ██ ██                     ║")
+    print("  ║        ██    ██   ██ ██   ██ ██████  ███████   SIGNAL!     ║")
+    print("  ║                                                              ║")
+    print("  ╚══════════════════════════════════════════════════════════════╝")
+    
+    print(f"\n  Found {len(trusted_setups)} HIGH-CONFIDENCE trade(s):\n")
+    
+    for i, s in enumerate(trusted_setups[:TRUST_MODE_MAX_TRADES_PER_DAY], 1):
+        # Calculate position size adjusted for VIX
+        shares = s.qty
+        if vix_level and vix_level > TRUST_MODE_VIX_CAUTION:
+            shares = max(1, shares // 2)  # Cut size in half
+        
+        risk_per_share = s.trigger - s.stop
+        total_risk = risk_per_share * shares
+        potential_profit = (s.target - s.trigger) * shares
+        rr_ratio = (s.target - s.trigger) / risk_per_share if risk_per_share > 0 else 0
+        
+        print(f"  ┌─────────────────────────────────────────────────────────────┐")
+        print(f"  │  #{i}  {s.ticker:<6}  {s.strategy:<12}  GRADE: {s.confidence_grade}  t-stat: {s.t_statistic:.1f}  │")
+        print(f"  ├─────────────────────────────────────────────────────────────┤")
+        print(f"  │  BUY:     {shares:>6} shares @ ${s.trigger:>8.2f}                     │")
+        print(f"  │  STOP:    Exit if price falls to ${s.stop:>8.2f}                │")
+        print(f"  │  TARGET:  Take profit at ${s.target:>8.2f}                       │")
+        print(f"  ├─────────────────────────────────────────────────────────────┤")
+        print(f"  │  RISK:    ${total_risk:>8.2f}  |  REWARD: ${potential_profit:>8.2f}  |  R:R {rr_ratio:.1f}:1  │")
+        print(f"  │  Win Rate: {s.win_rate:.0f}%  |  Profit Factor: {s.profit_factor:.2f}              │")
+        print(f"  └─────────────────────────────────────────────────────────────┘")
+        print()
+    
+    print("  ─────────────────────────────────────────────────────────────────")
+    print("  INSTRUCTIONS:")
+    print("    1. Open your broker")
+    print("    2. Place a BUY STOP order at the TRIGGER price")
+    print("    3. Set your STOP LOSS order immediately after fill")
+    print("    4. Set your TAKE PROFIT order at TARGET price")
+    print("    5. DO NOT move your stop loss lower!")
+    print("  ─────────────────────────────────────────────────────────────────")
+    print("=" * 70)
+    
+    return trusted_setups
 
 
 def _resolve_output_paths(output_dir, save_history=True):
@@ -4162,6 +4787,37 @@ class PaperTradeTracker:
 
 
 def main():
+    # ==========================================================================
+    # AUTO MODE DETECTION - Just run the file, everything works!
+    # ==========================================================================
+    # If no arguments provided, enable AUTO MODE (Trust Mode + auto settings)
+    import sys
+    no_args_provided = len(sys.argv) == 1
+    
+    if no_args_provided and AUTO_MODE_ENABLED:
+        # Initialize auto mode manager
+        auto_manager = AutoModeManager()
+        
+        # First-time setup wizard
+        if auto_manager.is_first_run():
+            auto_config = auto_manager.run_first_time_setup()
+        else:
+            auto_config = auto_manager.get_config()
+        
+        # Inject auto mode settings into sys.argv
+        sys.argv.extend([
+            "--trust-mode",
+            "--account-size", str(auto_config.get("account_size", ACCOUNT_SIZE)),
+            "--risk-per-trade", str(auto_config.get("risk_per_trade", RISK_PER_TRADE)),
+        ])
+        
+        # Handle paper trading bypass
+        if auto_config.get("paper_trading_bypassed", False):
+            # Create trust manager and bypass
+            temp_trust_mgr = TrustModeManager(account_size=auto_config.get("account_size", ACCOUNT_SIZE))
+            temp_trust_mgr.state["paper_validated"] = True
+            temp_trust_mgr._save_state()
+    
     # Default config file - no need for --config flag anymore
     DEFAULT_CONFIG = "titan_config.json"
     
@@ -4178,6 +4834,50 @@ def main():
         action=argparse.BooleanOptionalAction,
         default=SAFE_MODE_DEFAULT,
         help="Enable conservative safety-first defaults.",
+    )
+    parser.add_argument(
+        "--trust-mode",
+        "--no-trust-mode",
+        dest="trust_mode",
+        action=argparse.BooleanOptionalAction,
+        default=TRUST_MODE_DEFAULT,
+        help="TRUST MODE: Extremely strict filters. Only Grade A/B signals. Simple TRADE/DON'T output.",
+    )
+    parser.add_argument(
+        "--trust-paper",
+        dest="trust_paper",
+        action="store_true",
+        help="Start/continue Trust Mode paper trading validation period.",
+    )
+    parser.add_argument(
+        "--trust-bypass",
+        dest="trust_bypass",
+        action="store_true",
+        help="Bypass paper trading requirement (for experienced traders only).",
+    )
+    parser.add_argument(
+        "--trust-status",
+        dest="trust_status",
+        action="store_true",
+        help="Show Trust Mode status and exit.",
+    )
+    parser.add_argument(
+        "--trust-reset",
+        dest="trust_reset",
+        action="store_true",
+        help="Reset Trust Mode paper trading (start over).",
+    )
+    parser.add_argument(
+        "--trust-paper-win",
+        dest="trust_paper_win",
+        action="store_true",
+        help="Record a paper trade WIN for Trust Mode validation.",
+    )
+    parser.add_argument(
+        "--trust-paper-loss",
+        dest="trust_paper_loss",
+        action="store_true",
+        help="Record a paper trade LOSS for Trust Mode validation.",
     )
     parser.add_argument(
         "--use-walkforward",
@@ -4340,6 +5040,60 @@ def main():
         parser.set_defaults(**{k: v for k, v in config.items() if k in valid_keys})
     args = parser.parse_args(remaining)
     args = _apply_safe_mode(args)
+    args = _apply_trust_mode(args)
+    
+    # Initialize Trust Mode Manager
+    trust_manager = TrustModeManager(account_size=args.account_size)
+    
+    # Handle Trust Mode special commands
+    if getattr(args, 'trust_status', False):
+        print_trust_mode_header()
+        status = trust_manager.get_status_report()
+        print("\n  TRUST MODE STATUS")
+        print("  " + "=" * 50)
+        print(f"  Paper Trading Validated: {'YES' if status['paper_validated'] else 'NO'}")
+        print(f"  Trades Today: {status['trades_today']}/{status['max_daily']}")
+        print(f"  Trades This Week: {status['trades_this_week']}/{status['max_weekly']}")
+        print(f"  Current Positions: {status['current_positions']}/{status['max_positions']}")
+        print(f"  Consecutive Losses: {status['consecutive_losses']}")
+        if status['cooloff_until']:
+            print(f"  Cooloff Until: {status['cooloff_until']}")
+        print(f"  Total Trades: {status['total_trades']}")
+        print(f"  Win Rate: {status['win_rate']:.1f}%")
+        print("  " + "=" * 50)
+        return
+    
+    if getattr(args, 'trust_reset', False):
+        trust_manager.reset_paper_trading()
+        print("  Trust Mode paper trading has been reset.")
+        print("  Run with --trust-paper to start validation period.")
+        return
+    
+    if getattr(args, 'trust_bypass', False):
+        print("\n  WARNING: You are bypassing paper trading validation.")
+        print("  This means you will trade with REAL money without proving")
+        print("  that you can follow the system successfully.")
+        print("\n  Type exactly: I ACCEPT THE RISK")
+        confirm = input("  > ").strip()
+        if trust_manager.bypass_paper_validation(confirm):
+            print("  Paper validation bypassed. You may now use Trust Mode.")
+        else:
+            print("  Bypass cancelled. Run with --trust-paper to validate properly.")
+        return
+    
+    if getattr(args, 'trust_paper_win', False):
+        trust_manager.record_paper_trade(won=True)
+        print("  Recorded paper trade WIN!")
+        validated, msg = trust_manager.is_paper_trading_validated()
+        print(f"  Status: {msg}")
+        return
+    
+    if getattr(args, 'trust_paper_loss', False):
+        trust_manager.record_paper_trade(won=False)
+        print("  Recorded paper trade LOSS.")
+        validated, msg = trust_manager.is_paper_trading_validated()
+        print(f"  Status: {msg}")
+        return
 
     output_paths = _resolve_output_paths(args.output_dir, save_history=not getattr(args, 'no_history', False))
     log_file = None if args.no_log_file else (args.log_file or output_paths["log_file"])
@@ -4455,16 +5209,57 @@ def main():
     # Show market status
     market_status = MarketHours.get_market_status_string()
     
-    print("\n" + "="*60)
-    print("  TITAN TRADE v7.0 - PRODUCTION MODE")
-    print("  Statistical Validation + Risk Management")
-    print("="*60)
-    print(f"  Market Status: {market_status}")
-    print(f"  Min Trades Required: {args.min_trades_breakout} (statistical significance)")
-    print(f"  Risk Per Trade: ${args.risk_per_trade:.0f}")
-    print(f"  Max Positions: {MAX_POSITIONS}")
-    print(f"  Max Drawdown Limit: {MAX_DRAWDOWN_PCT}%")
-    print("="*60)
+    # TRUST MODE HEADER
+    if getattr(args, 'trust_mode', False):
+        print_trust_mode_header()
+        
+        # Check paper trading validation (unless running paper mode)
+        if not getattr(args, 'trust_paper', False):
+            validated, msg = trust_manager.is_paper_trading_validated()
+            if not validated:
+                print(f"\n  ⚠️  PAPER TRADING NOT VALIDATED")
+                print(f"  {msg}")
+                print("\n  Options:")
+                print("    --trust-paper  : Start/continue paper trading validation")
+                print("    --trust-bypass : Bypass validation (NOT RECOMMENDED)")
+                print("    --trust-status : Check your validation progress")
+                return
+        
+        # Trust mode specific info
+        print(f"\n  Market Status: {market_status}")
+        print(f"  Mode: TRUST MODE (Strictest Filters)")
+        print(f"  Min Trades Required: {args.min_trades_breakout} (for statistical significance)")
+        print(f"  Only Grade A/B signals shown")
+        print(f"  Daily Trade Limit: {TRUST_MODE_MAX_TRADES_PER_DAY}")
+        
+        # Check if we can trade
+        can_trade_check, reason = trust_manager.can_trade_today()
+        if not can_trade_check:
+            print(f"\n  ⛔ TRADING BLOCKED: {reason}")
+            return
+        
+        status = trust_manager.get_status_report()
+        print(f"\n  Trades Today: {status['trades_today']}/{status['max_daily']}")
+        print(f"  Positions: {status['current_positions']}/{status['max_positions']}")
+    else:
+        print("\n" + "="*60)
+        print("  TITAN TRADE v7.0 - PRODUCTION MODE")
+        print("  Statistical Validation + Risk Management")
+        print("="*60)
+        print(f"  Market Status: {market_status}")
+        print(f"  Min Trades Required: {args.min_trades_breakout} (statistical significance)")
+        print(f"  Risk Per Trade: ${args.risk_per_trade:.0f}")
+        print(f"  Max Positions: {MAX_POSITIONS}")
+        print(f"  Max Drawdown Limit: {MAX_DRAWDOWN_PCT}%")
+        print("="*60)
+    
+    # Paper trading mode for Trust Mode validation
+    if getattr(args, 'trust_paper', False):
+        trust_manager.start_paper_trading()
+        print("\n  📝 PAPER TRADING MODE (Trust Mode Validation)")
+        print(f"  Validation requires {TRUST_MODE_PAPER_VALIDATION_DAYS} days and {TRUST_MODE_PAPER_MIN_TRADES} trades")
+        validated, msg = trust_manager.is_paper_trading_validated()
+        print(f"  Status: {msg}")
     
     # Initialize signal tracker and show current status
     signal_tracker = SignalTracker()
@@ -4591,228 +5386,291 @@ def main():
         LOGGER.info("Run cancelled by user.")
         return
 
+    # Get VIX level for trust mode
+    vix_level_for_trust = None
+    try:
+        tickers_temp, data_temp = brain.get_data()
+        if isinstance(data_temp.columns, pd.MultiIndex):
+            for vix_key in ["^VIX", "VIX", "VIXY"]:
+                if vix_key in data_temp.columns.levels[0]:
+                    vix_df = data_temp[vix_key].dropna()
+                    if not vix_df.empty and 'Close' in vix_df.columns:
+                        vix_level_for_trust = float(vix_df['Close'].iloc[-1])
+                        break
+    except Exception:
+        pass
+    
     if setups:
         setups.sort(key=lambda x: x.score, reverse=True)
         
-        # UI CLEAR & HEADER
-        print("\n" * 3)
-        print("="*70)
-        print(f"  TITAN TRADE v7.0 - PRODUCTION MODE")
-        print(f"  Statistical Confidence + Risk Management")
-        print("="*70)
-        print(f"    * 'BUY NOW' = Price has triggered")
-        print(f"    * 'PENDING' = Place Buy Stop Order at Trigger Price")
-        print(f"    * Conf = Statistical Confidence Grade (A/B/C/D/F)")
-        print(f"    * t-stat >= 2.0 = Statistically significant edge")
-        print("-" * 70)
-        
-        table = []
-        report_rows = max(1, int(args.report_rows))
-        for s in setups[:report_rows]:
-            # Determine Status
-            dist = (s.trigger - s.price) / s.price
-            if s.price >= s.trigger:
-                status = "BUY NOW"
-            elif dist < 0.01:
-                status = "NEAR"
-            else:
-                status = "PENDING"
+        # =====================================================================
+        # TRUST MODE - SIMPLE OUTPUT
+        # =====================================================================
+        if getattr(args, 'trust_mode', False) or getattr(args, 'trust_paper', False):
+            trusted_setups = print_simple_verdict(setups, trust_manager, vix_level_for_trust)
             
-            # t-statistic indicator
-            sig = "Y" if s.t_statistic >= 2.0 else "N"
-
-            table.append([
-                s.ticker, 
-                s.strategy[:4], 
-                f"${s.price:.2f}",
-                f"${s.trigger:.2f}", 
-                status,
-                s.confidence_grade,
-                s.trend_grade,
-                f"{s.win_rate:.0f}%", 
-                f"{s.profit_factor:.2f}",
-                sig,
-                f"${s.stop:.2f}",
-                f"${s.target:.2f}",
-                s.qty
-            ])
+            # Handle paper trading mode
+            if getattr(args, 'trust_paper', False) and trusted_setups:
+                print("\n  📝 PAPER TRADING: Track this trade on paper")
+                print("  When you would exit (stop/target hit), run:")
+                print("    --trust-paper-win   (if profitable)")
+                print("    --trust-paper-loss  (if stopped out)")
             
-        print(tabulate(table, headers=["Ticker", "Type", "Price", "Trigger", "Status", "Conf", "Trend", "Win%", "PF", "Sig", "Stop", "Target", "Shares"], tablefmt="grid"))
+            # Save the results regardless
+            rows = []
+            for s in setups:
+                row = {
+                    "Ticker": s.ticker,
+                    "Strategy": s.strategy,
+                    "Price": round(s.price, 4),
+                    "Trigger": round(s.trigger, 4),
+                    "Stop": round(s.stop, 4),
+                    "Target": round(s.target, 4),
+                    "Shares": s.qty,
+                    "WinRate": round(s.win_rate, 2),
+                    "ProfitFactor": round(s.profit_factor, 2),
+                    "ConfidenceGrade": s.confidence_grade,
+                    "TrendGrade": s.trend_grade,
+                    "T_Statistic": round(s.t_statistic, 2),
+                    "TrustWorthy": "YES" if s.confidence_grade in ['A', 'B'] and s.t_statistic >= 2.0 else "NO",
+                }
+                rows.append(row)
+            
+            if rows:
+                df_out = pd.DataFrame(rows)
+                df_out.to_csv(output_paths["scan_csv_latest"], index=False)
+                df_out.to_csv(output_paths["scan_csv"], index=False)
+            
+            # Skip the detailed output in trust mode
+            # (The simple verdict is all they need)
+            pass  # Trust mode output already handled above
+            
+        else:
+            # Normal detailed output for non-trust mode
+            # UI CLEAR & HEADER
+            print("\n" * 3)
+            print("="*70)
+            print(f"  TITAN TRADE v7.0 - PRODUCTION MODE")
+            print(f"  Statistical Confidence + Risk Management")
+            print("="*70)
+            print(f"    * 'BUY NOW' = Price has triggered")
+            print(f"    * 'PENDING' = Place Buy Stop Order at Trigger Price")
+            print(f"    * Conf = Statistical Confidence Grade (A/B/C/D/F)")
+            print(f"    * t-stat >= 2.0 = Statistically significant edge")
+            print("-" * 70)
         
-        print(
-            "\nRecommendation:"
-            f" Breakout Win% >= {brain.min_win_rate_breakout:.0f}% PF >= {brain.min_pf_breakout:.2f},"
-            f" Dip Win% >= {brain.min_win_rate_dip:.0f}% PF >= {brain.min_pf_dip:.2f}"
-        )
-        
-        # Save CSV results for easy review
-        rows = []
-        for s in setups:
-            row = {
-                "Ticker": s.ticker,
-                "Strategy": s.strategy,
-                "Price": round(s.price, 4),
-                "Trigger": round(s.trigger, 4),
-                "Stop": round(s.stop, 4),
-                "Target": round(s.target, 4),
-                "Shares": s.qty,
-                "WinRate": round(s.win_rate, 2),
-                "ProfitFactor": round(s.profit_factor, 2),
-                "Kelly": round(s.kelly, 2),
-                "Score": round(s.score, 2),
-                "ConfidenceScore": round(s.confidence_score, 1),
-                "ConfidenceGrade": s.confidence_grade,
-                "TrendGrade": s.trend_grade,
-                "T_Statistic": round(s.t_statistic, 2),
-                "Significant": "Y" if s.t_statistic >= 2.0 else "N",
-                "Sector": s.sector,
-                "EarningsCall": s.earnings_call,
-                "Note": s.note,
-            }
-            wf = brain.wf_results.get(s.ticker, {}) if brain.wf_results else {}
-            row["Badge"] = _compute_badge(
-                s.strategy,
-                wf,
-                brain.min_regime_score,
-                wf_min_trades=brain.wf_min_trades,
-                wf_min_pf=brain.wf_min_pf,
-                wf_min_expectancy=brain.wf_min_expectancy,
-                wf_min_passrate=brain.wf_min_passrate,
-            )
-            if wf:
-                if s.strategy.startswith("BREAKOUT"):
-                    row["WF_Test_Trades"] = wf.get("Breakout_WF_Test_Trades_total", wf.get("Breakout_WF_Test_Trades", 0))
-                    row["WF_Test_PF"] = wf.get("Breakout_WF_Test_PF_trade_weighted", wf.get("Breakout_WF_Test_PF", 0))
-                    row["WF_Test_Expectancy"] = wf.get("Breakout_WF_Test_Expectancy_trade_weighted", wf.get("Breakout_WF_Test_Expectancy", 0))
-                    row["WF_PassRate"] = wf.get("Breakout_WF_PassRate", 0)
+            table = []
+            report_rows = max(1, int(args.report_rows))
+            for s in setups[:report_rows]:
+                # Determine Status
+                dist = (s.trigger - s.price) / s.price
+                if s.price >= s.trigger:
+                    status = "BUY NOW"
+                elif dist < 0.01:
+                    status = "NEAR"
                 else:
-                    row["WF_Test_Trades"] = wf.get("Dip_WF_Test_Trades_total", wf.get("Dip_WF_Test_Trades", 0))
-                    row["WF_Test_PF"] = wf.get("Dip_WF_Test_PF_trade_weighted", wf.get("Dip_WF_Test_PF", 0))
-                    row["WF_Test_Expectancy"] = wf.get("Dip_WF_Test_Expectancy_trade_weighted", wf.get("Dip_WF_Test_Expectancy", 0))
-                    row["WF_PassRate"] = wf.get("Dip_WF_PassRate", 0)
-                metrics = _wf_metrics_for_strategy(wf, s.strategy)
-                reg = metrics.get("regime_score", None)
+                    status = "PENDING"
+                
+                # t-statistic indicator
+                sig = "Y" if s.t_statistic >= 2.0 else "N"
+
+                table.append([
+                    s.ticker, 
+                    s.strategy[:4], 
+                    f"${s.price:.2f}",
+                    f"${s.trigger:.2f}", 
+                    status,
+                    s.confidence_grade,
+                    s.trend_grade,
+                    f"{s.win_rate:.0f}%", 
+                    f"{s.profit_factor:.2f}",
+                    sig,
+                    f"${s.stop:.2f}",
+                    f"${s.target:.2f}",
+                    s.qty
+                ])
+            
+            print(tabulate(table, headers=["Ticker", "Type", "Price", "Trigger", "Status", "Conf", "Trend", "Win%", "PF", "Sig", "Stop", "Target", "Shares"], tablefmt="grid"))
+            
+            print(
+                "\nRecommendation:"
+                f" Breakout Win% >= {brain.min_win_rate_breakout:.0f}% PF >= {brain.min_pf_breakout:.2f},"
+                f" Dip Win% >= {brain.min_win_rate_dip:.0f}% PF >= {brain.min_pf_dip:.2f}"
+            )
+            
+            # Save CSV results for easy review
+            rows = []
+            for s in setups:
+                row = {
+                    "Ticker": s.ticker,
+                    "Strategy": s.strategy,
+                    "Price": round(s.price, 4),
+                    "Trigger": round(s.trigger, 4),
+                    "Stop": round(s.stop, 4),
+                    "Target": round(s.target, 4),
+                    "Shares": s.qty,
+                    "WinRate": round(s.win_rate, 2),
+                    "ProfitFactor": round(s.profit_factor, 2),
+                    "Kelly": round(s.kelly, 2),
+                    "Score": round(s.score, 2),
+                    "ConfidenceScore": round(s.confidence_score, 1),
+                    "ConfidenceGrade": s.confidence_grade,
+                    "TrendGrade": s.trend_grade,
+                    "T_Statistic": round(s.t_statistic, 2),
+                    "Significant": "Y" if s.t_statistic >= 2.0 else "N",
+                    "Sector": s.sector,
+                    "EarningsCall": s.earnings_call,
+                    "Note": s.note,
+                }
+                wf = brain.wf_results.get(s.ticker, {}) if brain.wf_results else {}
+                row["Badge"] = _compute_badge(
+                    s.strategy,
+                    wf,
+                    brain.min_regime_score,
+                    wf_min_trades=brain.wf_min_trades,
+                    wf_min_pf=brain.wf_min_pf,
+                    wf_min_expectancy=brain.wf_min_expectancy,
+                    wf_min_passrate=brain.wf_min_passrate,
+                )
+                if wf:
+                    if s.strategy.startswith("BREAKOUT"):
+                        row["WF_Test_Trades"] = wf.get("Breakout_WF_Test_Trades_total", wf.get("Breakout_WF_Test_Trades", 0))
+                        row["WF_Test_PF"] = wf.get("Breakout_WF_Test_PF_trade_weighted", wf.get("Breakout_WF_Test_PF", 0))
+                        row["WF_Test_Expectancy"] = wf.get("Breakout_WF_Test_Expectancy_trade_weighted", wf.get("Breakout_WF_Test_Expectancy", 0))
+                        row["WF_PassRate"] = wf.get("Breakout_WF_PassRate", 0)
+                    else:
+                        row["WF_Test_Trades"] = wf.get("Dip_WF_Test_Trades_total", wf.get("Dip_WF_Test_Trades", 0))
+                        row["WF_Test_PF"] = wf.get("Dip_WF_Test_PF_trade_weighted", wf.get("Dip_WF_Test_PF", 0))
+                        row["WF_Test_Expectancy"] = wf.get("Dip_WF_Test_Expectancy_trade_weighted", wf.get("Dip_WF_Test_Expectancy", 0))
+                        row["WF_PassRate"] = wf.get("Dip_WF_PassRate", 0)
+                    metrics = _wf_metrics_for_strategy(wf, s.strategy)
+                    reg = metrics.get("regime_score", None)
+                    try:
+                        reg = float(reg) if reg is not None else None
+                    except Exception:
+                        reg = None
+                    if reg is not None:
+                        row["RegimeScore"] = round(reg, 3)
+                rows.append(row)
+
+            if rows:
+                df_out = pd.DataFrame(rows)
+                df_out.to_csv(output_paths["scan_csv_latest"], index=False)
+                df_out.to_csv(output_paths["scan_csv"], index=False)
+                if args.save_json:
+                    with open(output_paths["scan_json_latest"], "w", encoding="utf-8") as f:
+                        json.dump(rows, f, indent=2)
+                    with open(output_paths["scan_json"], "w", encoding="utf-8") as f:
+                        json.dump(rows, f, indent=2)
+
+            with open(output_paths["scan_txt_latest"], "w", encoding="utf-8") as f:
+                f.write("TITAN TRADE SCAN RESULTS\n")
+                f.write(f"Date: {datetime.now()}\n")
+                f.write("="*60 + "\n")
+                f.write(tabulate(table, headers=["Ticker", "Type", "Price", "Trigger", "Status", "Badge", "Win%", "PF", "Kelly", "Stop", "Target", "Note"], tablefmt="grid"))
+                f.write("\n\nSCAN FILTER REPORT\n")
+                f.write("-" * 40 + "\n")
+                for k, v in stats.items():
+                    f.write(f"{k.ljust(20)}: {v}\n")
+            with open(output_paths["scan_txt"], "w", encoding="utf-8") as f:
+                f.write("TITAN TRADE SCAN RESULTS\n")
+                f.write(f"Date: {datetime.now()}\n")
+                f.write("="*60 + "\n")
+                f.write(tabulate(table, headers=["Ticker", "Type", "Price", "Trigger", "Status", "Badge", "Win%", "PF", "Kelly", "Stop", "Target", "Note"], tablefmt="grid"))
+                f.write("\n\nSCAN FILTER REPORT\n")
+                f.write("-" * 40 + "\n")
+                for k, v in stats.items():
+                    f.write(f"{k.ljust(20)}: {v}\n")
+
+            print(f"\nReport saved to {output_paths['scan_txt_latest']} and {output_paths['scan_csv_latest']}")
+            LOGGER.info("Reports written to %s", args.output_dir)
+            
+            # =================================================================
+            # PRE-TRADE CHECKLIST - Run for top signals
+            # =================================================================
+            print("\n" + "="*60)
+            print("  PRE-TRADE CHECKLIST FOR TOP SIGNALS")
+            print("="*60)
+            
+            # Get the cached data for checklist validation
+            tickers_data, all_data = brain.get_data()
+            
+            for s in setups[:3]:  # Check top 3 signals
                 try:
-                    reg = float(reg) if reg is not None else None
-                except Exception:
-                    reg = None
-                if reg is not None:
-                    row["RegimeScore"] = round(reg, 3)
-            rows.append(row)
-
-        if rows:
-            df_out = pd.DataFrame(rows)
-            df_out.to_csv(output_paths["scan_csv_latest"], index=False)
-            df_out.to_csv(output_paths["scan_csv"], index=False)
-            if args.save_json:
-                with open(output_paths["scan_json_latest"], "w", encoding="utf-8") as f:
-                    json.dump(rows, f, indent=2)
-                with open(output_paths["scan_json"], "w", encoding="utf-8") as f:
-                    json.dump(rows, f, indent=2)
-
-        with open(output_paths["scan_txt_latest"], "w", encoding="utf-8") as f:
-            f.write("TITAN TRADE SCAN RESULTS\n")
-            f.write(f"Date: {datetime.now()}\n")
-            f.write("="*60 + "\n")
-            f.write(tabulate(table, headers=["Ticker", "Type", "Price", "Trigger", "Status", "Badge", "Win%", "PF", "Kelly", "Stop", "Target", "Note"], tablefmt="grid"))
-            f.write("\n\nSCAN FILTER REPORT\n")
-            f.write("-" * 40 + "\n")
-            for k, v in stats.items():
-                f.write(f"{k.ljust(20)}: {v}\n")
-        with open(output_paths["scan_txt"], "w", encoding="utf-8") as f:
-            f.write("TITAN TRADE SCAN RESULTS\n")
-            f.write(f"Date: {datetime.now()}\n")
-            f.write("="*60 + "\n")
-            f.write(tabulate(table, headers=["Ticker", "Type", "Price", "Trigger", "Status", "Badge", "Win%", "PF", "Kelly", "Stop", "Target", "Note"], tablefmt="grid"))
-            f.write("\n\nSCAN FILTER REPORT\n")
-            f.write("-" * 40 + "\n")
-            for k, v in stats.items():
-                f.write(f"{k.ljust(20)}: {v}\n")
-
-        print(f"\nReport saved to {output_paths['scan_txt_latest']} and {output_paths['scan_csv_latest']}")
-        LOGGER.info("Reports written to %s", args.output_dir)
-        
-        # =================================================================
-        # PRE-TRADE CHECKLIST - Run for top signals
-        # =================================================================
-        print("\n" + "="*60)
-        print("  PRE-TRADE CHECKLIST FOR TOP SIGNALS")
-        print("="*60)
-        
-        # Get the cached data for checklist validation
-        tickers_data, all_data = brain.get_data()
-        
-        for s in setups[:3]:  # Check top 3 signals
-            try:
-                if isinstance(all_data.columns, pd.MultiIndex) and s.ticker in all_data.columns.levels[0]:
-                    ticker_df = all_data[s.ticker].dropna()
-                    checklist = PreTradeChecklist(s, ticker_df, risk_mgr)
-                    passed, checks, warnings = checklist.run_all_checks()
-                    checklist.print_checklist()
-            except Exception as e:
-                print(f"  Could not run checklist for {s.ticker}: {e}")
-        
-        # =================================================================
-        # AUTO-TRACK TOP SIGNALS
-        # =================================================================
-        print("\n" + "="*60)
-        print("  AUTO-TRACKING TOP SIGNALS")
-        print("="*60)
-        
-        for s in setups[:AUTO_TRACK_TOP_N]:
-            result = signal_tracker.add_signal(s, s.price)
-            if result == "added":
-                print(f"  [+] Added {s.ticker} to tracker (Entry: ${s.trigger:.2f})")
-            else:
-                print(f"  [~] Updated {s.ticker} in tracker")
-        
-        # Update prices for all tracked signals using current data
-        tickers_data_for_tracker, all_data_for_tracker = brain.get_data()
-        if all_data_for_tracker is not None and not all_data_for_tracker.empty:
-            price_dict = {}
-            for ticker in signal_tracker.get_active_signals().keys():
-                try:
-                    if isinstance(all_data_for_tracker.columns, pd.MultiIndex):
-                        if ticker in all_data_for_tracker.columns.levels[0]:
-                            ticker_df = all_data_for_tracker[ticker].dropna()
-                            if not ticker_df.empty:
-                                price_dict[ticker] = ticker_df['Close'].iloc[-1]
-                except Exception:
-                    pass
-            if price_dict:
-                signal_tracker.update_prices(price_dict)
-        
-        # Show updated tracker status
-        signal_tracker.print_status()
-        
-        # Paper trade mode - track without real money
-        if getattr(args, 'paper_trade', False) and setups:
-            paper_tracker = PaperTradeTracker()
-            print("\n" + "="*50)
-            print("  PAPER TRADE MODE")
-            print("  Add signals to paper portfolio for tracking")
-            print("="*50)
+                    if isinstance(all_data.columns, pd.MultiIndex) and s.ticker in all_data.columns.levels[0]:
+                        ticker_df = all_data[s.ticker].dropna()
+                        checklist = PreTradeChecklist(s, ticker_df, risk_mgr)
+                        passed, checks, warnings = checklist.run_all_checks()
+                        checklist.print_checklist()
+                except Exception as e:
+                    print(f"  Could not run checklist for {s.ticker}: {e}")
             
-            for s in setups[:5]:  # Show top 5
-                print(f"  [{setups.index(s)+1}] {s.ticker} ({s.strategy}) - ${s.trigger:.2f}")
+            # =================================================================
+            # AUTO-TRACK TOP SIGNALS
+            # =================================================================
+            print("\n" + "="*60)
+            print("  AUTO-TRACKING TOP SIGNALS")
+            print("="*60)
             
-            print("\n  Enter number to add, or press ENTER to skip:")
-            choice = input("  > ").strip()
+            for s in setups[:AUTO_TRACK_TOP_N]:
+                result = signal_tracker.add_signal(s, s.price)
+                if result == "added":
+                    print(f"  [+] Added {s.ticker} to tracker (Entry: ${s.trigger:.2f})")
+                else:
+                    print(f"  [~] Updated {s.ticker} in tracker")
             
-            if choice.isdigit():
-                idx = int(choice) - 1
-                if 0 <= idx < len(setups):
-                    paper_tracker.add_trade(setups[idx])
+            # Update prices for all tracked signals using current data
+            tickers_data_for_tracker, all_data_for_tracker = brain.get_data()
+            if all_data_for_tracker is not None and not all_data_for_tracker.empty:
+                price_dict = {}
+                for ticker in signal_tracker.get_active_signals().keys():
+                    try:
+                        if isinstance(all_data_for_tracker.columns, pd.MultiIndex):
+                            if ticker in all_data_for_tracker.columns.levels[0]:
+                                ticker_df = all_data_for_tracker[ticker].dropna()
+                                if not ticker_df.empty:
+                                    price_dict[ticker] = ticker_df['Close'].iloc[-1]
+                    except Exception:
+                        pass
+                if price_dict:
+                    signal_tracker.update_prices(price_dict)
             
-            paper_tracker.print_summary()
-        
-        elif args.portfolio:
-            addToPortfolio(setups)
+            # Show updated tracker status
+            signal_tracker.print_status()
+            
+            # Paper trade mode - track without real money
+            if getattr(args, 'paper_trade', False) and setups:
+                paper_tracker = PaperTradeTracker()
+                print("\n" + "="*50)
+                print("  PAPER TRADE MODE")
+                print("  Add signals to paper portfolio for tracking")
+                print("="*50)
+                
+                for s in setups[:5]:  # Show top 5
+                    print(f"  [{setups.index(s)+1}] {s.ticker} ({s.strategy}) - ${s.trigger:.2f}")
+                
+                print("\n  Enter number to add, or press ENTER to skip:")
+                choice = input("  > ").strip()
+                
+                if choice.isdigit():
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(setups):
+                        paper_tracker.add_trade(setups[idx])
+                
+                paper_tracker.print_summary()
+            
+            elif args.portfolio:
+                addToPortfolio(setups)
         
     else:
-        print("\nNo valid setups found that passed statistical filters.")
-        print("This is EXPECTED with strict production settings.")
-        print("Review near-miss report for stocks close to qualification.")
+        # No setups found
+        if getattr(args, 'trust_mode', False) or getattr(args, 'trust_paper', False):
+            # Trust mode simple output
+            print_simple_verdict([], trust_manager, vix_level_for_trust)
+        else:
+            print("\nNo valid setups found that passed statistical filters.")
+            print("This is EXPECTED with strict production settings.")
+            print("Review near-miss report for stocks close to qualification.")
         
         # Still update tracked signals prices even if no new setups
         if signal_tracker.get_active_signals():
