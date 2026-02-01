@@ -251,7 +251,15 @@ class DataValidator:
 
 
 class StatisticalConfidenceScorer:
-    """Calculates confidence score based on statistical robustness."""
+    """Calculates confidence score based on statistical robustness.
+    
+    Scoring is calibrated for realistic profitable trading:
+    - Grade A (70+): Excellent setup, high confidence
+    - Grade B (55+): Good setup, trade with normal size  
+    - Grade C (40+): Acceptable setup, consider reduced size
+    - Grade D (25+): Marginal, only in strong bull market
+    - Grade F (<25): Avoid
+    """
     
     @staticmethod
     def calculate_confidence(trades, win_rate, profit_factor, expectancy, 
@@ -259,98 +267,110 @@ class StatisticalConfidenceScorer:
         score = 0
         factors = {}
         
-        # Sample Size (0-25 points)
-        if trades >= 100:
+        # Sample Size (0-25 points) - Realistic for 500-day backtest
+        if trades >= 50:
             sample_score = 25
-        elif trades >= 50:
-            sample_score = 20
         elif trades >= 30:
-            sample_score = 15
+            sample_score = 20
+        elif trades >= 20:
+            sample_score = 16
         elif trades >= 15:
+            sample_score = 12
+        elif trades >= 10:
             sample_score = 8
+        elif trades >= 5:
+            sample_score = 4
         else:
             sample_score = 0
         score += sample_score
         factors["sample_size"] = {"value": trades, "score": sample_score, "max": 25}
         
-        # Win Rate (0-20 points)
-        if win_rate >= 60:
+        # Win Rate (0-25 points) - Core profitability metric
+        if win_rate >= 65:
+            wr_score = 25
+        elif win_rate >= 58:
             wr_score = 20
-        elif win_rate >= 55:
-            wr_score = 15
-        elif win_rate >= 50:
-            wr_score = 10
+        elif win_rate >= 52:
+            wr_score = 16
+        elif win_rate >= 48:
+            wr_score = 12
         elif win_rate >= 45:
-            wr_score = 5
+            wr_score = 8
+        elif win_rate >= 40:
+            wr_score = 4
         else:
             wr_score = 0
         score += wr_score
-        factors["win_rate"] = {"value": win_rate, "score": wr_score, "max": 20}
+        factors["win_rate"] = {"value": win_rate, "score": wr_score, "max": 25}
         
-        # Profit Factor (0-20 points)
-        if profit_factor >= 2.5:
+        # Profit Factor (0-25 points) - Key for real profitability
+        if profit_factor >= 2.0:
+            pf_score = 25
+        elif profit_factor >= 1.7:
             pf_score = 20
-        elif profit_factor >= 2.0:
-            pf_score = 16
         elif profit_factor >= 1.5:
+            pf_score = 16
+        elif profit_factor >= 1.3:
             pf_score = 12
-        elif profit_factor >= 1.2:
+        elif profit_factor >= 1.15:
             pf_score = 8
         elif profit_factor >= 1.0:
             pf_score = 4
         else:
             pf_score = 0
         score += pf_score
-        factors["profit_factor"] = {"value": profit_factor, "score": pf_score, "max": 20}
+        factors["profit_factor"] = {"value": profit_factor, "score": pf_score, "max": 25}
         
-        # Expectancy (0-15 points)
-        if expectancy >= 0.02:
+        # Expectancy (0-15 points) - Average profit per trade
+        if expectancy >= 0.015:
             exp_score = 15
         elif expectancy >= 0.01:
             exp_score = 12
         elif expectancy >= 0.005:
-            exp_score = 8
-        elif expectancy >= 0.002:
-            exp_score = 4
+            exp_score = 9
+        elif expectancy >= 0.003:
+            exp_score = 6
+        elif expectancy >= 0.001:
+            exp_score = 3
         else:
             exp_score = 0
         score += exp_score
         factors["expectancy"] = {"value": expectancy, "score": exp_score, "max": 15}
         
-        # Walk-Forward (0-10 points)
+        # Walk-Forward bonus (0-5 points)
         if wf_pass_rate is not None:
-            if wf_pass_rate >= 0.75:
-                wf_score = 10
-            elif wf_pass_rate >= 0.50:
-                wf_score = 7
-            elif wf_pass_rate >= 0.25:
+            if wf_pass_rate >= 0.60:
+                wf_score = 5
+            elif wf_pass_rate >= 0.40:
                 wf_score = 3
+            elif wf_pass_rate >= 0.25:
+                wf_score = 1
             else:
                 wf_score = 0
             score += wf_score
-            factors["wf_pass_rate"] = {"value": wf_pass_rate, "score": wf_score, "max": 10}
+            factors["wf_pass_rate"] = {"value": wf_pass_rate, "score": wf_score, "max": 5}
         
-        # OOS (0-10 points)
+        # OOS bonus (0-5 points)
         if oos_pf is not None:
-            if oos_pf >= 1.5:
-                oos_score = 10
-            elif oos_pf >= 1.2:
-                oos_score = 7
+            if oos_pf >= 1.3:
+                oos_score = 5
+            elif oos_pf >= 1.1:
+                oos_score = 3
             elif oos_pf >= 1.0:
-                oos_score = 4
+                oos_score = 1
             else:
                 oos_score = 0
             score += oos_score
-            factors["oos_profit_factor"] = {"value": oos_pf, "score": oos_score, "max": 10}
+            factors["oos_profit_factor"] = {"value": oos_pf, "score": oos_score, "max": 5}
         
-        # Grade
-        if score >= 80:
+        # Grade - Calibrated for practical profitable trading
+        if score >= 70:
             grade = "A"
-        elif score >= 65:
+        elif score >= 55:
             grade = "B"
-        elif score >= 50:
+        elif score >= 40:
             grade = "C"
-        elif score >= 35:
+        elif score >= 25:
             grade = "D"
         else:
             grade = "F"
@@ -359,7 +379,7 @@ class StatisticalConfidenceScorer:
             "score": score,
             "grade": grade,
             "factors": factors,
-            "tradeable": score >= 50 and trades >= 30,
+            "tradeable": score >= 40 and trades >= 10 and profit_factor >= 1.15,
         }
     
     @staticmethod

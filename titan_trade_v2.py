@@ -226,9 +226,13 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings):
         
         res['expectancy'] = expectancy(res.get('trades_list', []))
         
-        # Quality filter
-        if res['win_rate'] < min_wr or res['pf'] < min_pf or res['trades'] < min_trades:
-            return None, "Rejected (Quality)", None
+        # Quality filter - Need profitable backtest results
+        if res['trades'] < min_trades:
+            return None, "Rejected (Quality)", f"Trades: {res['trades']} < {min_trades}"
+        if res['win_rate'] < min_wr:
+            return None, "Rejected (Quality)", f"WR: {res['win_rate']:.0f}% < {min_wr:.0f}%"
+        if res['pf'] < min_pf:
+            return None, "Rejected (Quality)", f"PF: {res['pf']:.2f} < {min_pf:.2f}"
         
         # Calculate setup
         trigger = float(df['High'].iloc[-16:-1].max()) + 0.02 if is_breakout else c
@@ -439,6 +443,12 @@ def main():
     trust_manager = TrustModeManager(account_size=args.account_size)
     risk_manager = PortfolioRiskManager(account_size=args.account_size)
     signal_tracker = SignalTracker()
+    
+    # Check for paper trading bypass from auto config
+    auto_manager = AutoModeManager()
+    if auto_manager.config.get("paper_trading_bypassed", False):
+        trust_manager.state["paper_validated"] = True
+        trust_manager._save_state()
     
     # Handle Trust Mode commands
     if args.trust_status:

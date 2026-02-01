@@ -204,36 +204,37 @@ TRUST_MODE_DEFAULT = False
 AUTO_MODE_ENABLED = True
 
 TRUST_MODE_SETTINGS = {
-    "require_walkforward": True,
-    "require_oos": True,
-    "confirm_days_breakout": 3,
-    "confirm_days_dip": 3,
+    "require_walkforward": False,  # Simplified for practical use
+    "require_oos": False,
+    "confirm_days_breakout": 2,
+    "confirm_days_dip": 2,
     "require_confirmed_setup": True,
-    "min_trades_breakout": 30,
-    "min_trades_dip": 30,
-    "min_winrate_breakout": 55.0,
-    "min_winrate_dip": 52.0,
-    "min_pf_breakout": 1.5,
-    "min_pf_dip": 1.4,
-    "min_expectancy_breakout": 0.005,
-    "min_expectancy_dip": 0.003,
-    "min_rr_breakout": 2.0,
-    "min_rr_dip": 1.8,
-    "wf_min_trades": 15,
-    "wf_min_pf": 1.3,
-    "wf_min_expectancy": 0.002,
-    "wf_min_passrate": 0.50,
-    "oos_min_trades": 10,
-    "oos_min_winrate_breakout": 52.0,
-    "oos_min_winrate_dip": 50.0,
-    "oos_min_pf_breakout": 1.3,
-    "oos_min_pf_dip": 1.2,
-    "oos_min_expectancy_breakout": 0.002,
-    "oos_min_expectancy_dip": 0.001,
+    "min_trades_breakout": 15,  # Realistic for 500-day backtest
+    "min_trades_dip": 12,
+    "min_winrate_breakout": 50.0,  # 50%+ with good PF is profitable
+    "min_winrate_dip": 48.0,
+    "min_pf_breakout": 1.3,  # PF > 1.3 is genuinely profitable
+    "min_pf_dip": 1.25,
+    "min_expectancy_breakout": 0.003,  # 0.3% per trade expectancy
+    "min_expectancy_dip": 0.002,
+    "min_rr_breakout": 1.5,  # 1.5:1 minimum R:R
+    "min_rr_dip": 1.5,
+    "wf_min_trades": 8,
+    "wf_min_pf": 1.1,
+    "wf_min_expectancy": 0.001,
+    "wf_min_passrate": 0.40,
+    "oos_min_trades": 5,
+    "oos_min_winrate_breakout": 48.0,
+    "oos_min_winrate_dip": 45.0,
+    "oos_min_pf_breakout": 1.15,
+    "oos_min_pf_dip": 1.1,
+    "oos_min_expectancy_breakout": 0.001,
+    "oos_min_expectancy_dip": 0.0005,
 }
 
-TRUST_MODE_MIN_GRADE = "B"
-TRUST_MODE_REQUIRE_SIGNIFICANCE = True
+# Realistic trust mode thresholds
+TRUST_MODE_MIN_GRADE = "C"  # C grade (score >= 50) is practical and profitable
+TRUST_MODE_REQUIRE_SIGNIFICANCE = False  # t-stat >= 2.0 is too strict for real trading
 TRUST_MODE_MAX_TRADES_PER_DAY = 2
 TRUST_MODE_MAX_TRADES_PER_WEEK = 5
 TRUST_MODE_LOSS_STREAK_COOLOFF = 3

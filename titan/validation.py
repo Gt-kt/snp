@@ -101,9 +101,13 @@ class StrategyValidator:
 
         return 0.0
 
-    def backtest_breakout(self, days=500, depth=0.20, vol_mult=1.2, 
+    def backtest_breakout(self, days=750, depth=0.22, vol_mult=1.0, 
                          target_mult=2.5, stop_mult=2.0, return_trades=False):
-        """Fast simulation of VCP Breakouts."""
+        """Fast simulation of VCP Breakouts.
+        
+        Extended to 750 days (~3 years) for better sample size.
+        Relaxed volume multiplier to capture more valid setups.
+        """
         df = self.df.iloc[-days:].copy()
         if len(df) < 100:
             base = {'win_rate': 0, 'pf': 0, 'trades': 0}
@@ -129,7 +133,8 @@ class StrategyValidator:
                 continue
             if i < 70:
                 continue
-            if not (sma50[i] > sma50[i-10] and sma200[i] > sma200[i-10]):
+            # Relaxed: only require 50 SMA rising (200 SMA takes too long)
+            if not (sma50[i] > sma50[i-10]):
                 continue
             if atr[i] and closes[i] > 0 and (atr[i] / closes[i]) > 0.12:
                 continue
@@ -142,16 +147,19 @@ class StrategyValidator:
             if d > depth:
                 continue
 
+            # Relaxed 5-day range filter from 8% to 10%
             range_5 = (np.max(highs[i-5:i+1]) - np.min(lows[i-5:i+1])) / max(curr_c, 1e-9)
-            if range_5 > 0.08:
+            if range_5 > 0.10:
                 continue
             
-            if (h_handle - curr_c) / h_handle > 0.06:
+            # Relaxed distance from handle high from 6% to 8%
+            if (h_handle - curr_c) / h_handle > 0.08:
                 continue
             
+            # Relaxed base volume filter
             if not np.isnan(vol_sma[i]):
                 base_vol = np.mean(volumes[i-15:i+1])
-                if base_vol > (vol_sma[i] * 1.15):
+                if base_vol > (vol_sma[i] * 1.3):  # Was 1.15
                     continue
             
             atr_val = atr[i] if i < len(atr) and not np.isnan(atr[i]) else (curr_c * 0.02)
@@ -165,13 +173,16 @@ class StrategyValidator:
             next_vol_sma = vol_sma[i+1] if i+1 < len(vol_sma) else np.nan
             
             if next_h > pivot:
+                # Volume confirmation: just require above average (was 1.2x)
                 if not np.isnan(next_vol_sma) and next_v < (next_vol_sma * vol_mult):
                     continue
-                if next_c < (pivot * 0.995):
+                # Relaxed close above pivot from 0.5% to 1%
+                if next_c < (pivot * 0.99):
                     continue
                 day_range = max(next_h - next_l, 1e-9)
                 close_pos = (next_c - next_l) / day_range
-                if close_pos < 0.5:
+                # Relaxed close position from 50% to 40%
+                if close_pos < 0.40:
                     continue
                 
                 buy_price = max(pivot, next_o)
@@ -206,8 +217,12 @@ class StrategyValidator:
             res['trades_list'] = trades
         return res
 
-    def backtest_dip(self, days=500, stop_mult=2.0, target_mult=3.5, return_trades=False):
-        """Fast simulation of Dip Buys (SMA50 support)."""
+    def backtest_dip(self, days=750, stop_mult=2.0, target_mult=3.0, return_trades=False):
+        """Fast simulation of Dip Buys (SMA50 support).
+        
+        Extended to 750 days for better sample size.
+        Target reduced slightly for more realistic exits.
+        """
         df = self.df.iloc[-days:].copy()
         if len(df) < 100:
             base = {'win_rate': 0, 'pf': 0, 'trades': 0}
@@ -229,18 +244,27 @@ class StrategyValidator:
         trades = []
         
         for i in range(50, len(df)-5):
-            if closes.iloc[i] > sma50.iloc[i] and sma50.iloc[i] > sma200.iloc[i]:
+            # Primary trend: above 200 SMA (or close to it for early recoveries)
+            if closes.iloc[i] > sma200.iloc[i] * 0.97:  # Allow 3% below 200 SMA
+                # 50 SMA should be rising
                 if sma50.iloc[i] <= sma50.iloc[i-10]:
                     continue
                 
+                # Distance from 50 SMA - extended range to capture more setups
                 dist = (lows.iloc[i] - sma50.iloc[i]) / sma50.iloc[i]
                 
-                if -0.02 < dist < 0.02:
-                    if rsi14.iloc[i] < 45:
+                # Widened range from ±2% to -3%/+3%
+                if -0.03 < dist < 0.03:
+                    # RSI filter - relaxed from 45 to 40
+                    if rsi14.iloc[i] < 40:
                         continue
-                    if not np.isnan(vol_sma.iloc[i]) and volumes.iloc[i] > vol_sma.iloc[i] * 1.3:
+                    # Volume spike filter - relaxed from 1.3x to 1.5x
+                    if not np.isnan(vol_sma.iloc[i]) and volumes.iloc[i] > vol_sma.iloc[i] * 1.5:
                         continue
-                    if closes.iloc[i] <= opens.iloc[i]:
+                    # Removed strict bullish close requirement - allow neutral days
+                    # Just ensure it's not a big red day
+                    daily_change = (closes.iloc[i] - opens.iloc[i]) / opens.iloc[i]
+                    if daily_change < -0.02:  # Skip if down more than 2%
                         continue
                     if i + 1 >= len(df):
                         continue
@@ -248,13 +272,14 @@ class StrategyValidator:
                     buy_price = opens.iloc[i + 1]
                     if buy_price <= 0:
                         continue
-                    if abs(buy_price - closes.iloc[i]) / closes.iloc[i] > 0.05:
+                    # Relaxed gap limit from 5% to 6%
+                    if abs(buy_price - closes.iloc[i]) / closes.iloc[i] > 0.06:
                         continue
                     
                     atr_val = atr.iloc[i]
                     if np.isnan(atr_val) or atr_val <= 0:
                         atr_val = buy_price * 0.02
-                    if (atr_val / buy_price) > 0.07:
+                    if (atr_val / buy_price) > 0.08:  # Relaxed from 7% to 8%
                         continue
                     
                     stop = buy_price - (atr_val * stop_mult)

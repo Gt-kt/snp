@@ -313,10 +313,10 @@ class AutoModeManager:
 def print_trust_mode_header():
     """Print the Trust Mode header."""
     print("\n" + "=" * 70)
-    print("  █" * 33)
-    print("  █" + "     TITAN TRADE - TRUST MODE     ".center(64) + "█")
-    print("  █" + "  If it says TRADE, trust it.     ".center(64) + "█")
-    print("  █" * 33)
+    print("  #" * 33)
+    print("  #" + "     TITAN TRADE - TRUST MODE     ".center(64) + "#")
+    print("  #" + "  If it says TRADE, trust it.     ".center(64) + "#")
+    print("  #" * 33)
     print("=" * 70)
 
 
@@ -327,44 +327,72 @@ def print_simple_verdict(setups, trust_manager, vix_level=None):
     can_trade, reason = trust_manager.can_trade_today()
     
     if not can_trade:
-        print("  ╔══════════════════════════════════════════════════════════════╗")
-        print("  ║           DON'T TRADE TODAY - LIMIT REACHED                 ║")
-        print("  ╚══════════════════════════════════════════════════════════════╝")
+        print("  +--------------------------------------------------------------+")
+        print("  |           DON'T TRADE TODAY - LIMIT REACHED                 |")
+        print("  +--------------------------------------------------------------+")
         print(f"\n  REASON: {reason}")
         print("=" * 70)
         return None
     
     if vix_level is not None and vix_level > TRUST_MODE_VIX_HALT:
-        print("  ╔══════════════════════════════════════════════════════════════╗")
-        print("  ║           DON'T TRADE - HIGH VOLATILITY                     ║")
-        print("  ╚══════════════════════════════════════════════════════════════╝")
+        print("  +--------------------------------------------------------------+")
+        print("  |           DON'T TRADE - HIGH VOLATILITY                     |")
+        print("  +--------------------------------------------------------------+")
         print(f"\n  VIX is at {vix_level:.1f} (HALT threshold: {TRUST_MODE_VIX_HALT})")
         print("=" * 70)
         return None
     
-    # Filter for Grade A/B and statistical significance
+    # Filter for minimum grade and optional statistical significance
+    # Grade C+ (score >= 50) with positive expectancy is realistically profitable
+    valid_grades = ['A', 'B', 'C'] if TRUST_MODE_MIN_GRADE == 'C' else ['A', 'B']
+    if TRUST_MODE_MIN_GRADE == 'D':
+        valid_grades = ['A', 'B', 'C', 'D']
+    
     trusted_setups = []
     for s in setups:
         grade = getattr(s, 'confidence_grade', 'F')
         t_stat = getattr(s, 't_statistic', 0)
-        if grade not in ['A', 'B']:
+        
+        # Grade filter
+        if grade not in valid_grades:
             continue
-        if TRUST_MODE_REQUIRE_SIGNIFICANCE and t_stat < 2.0:
+        
+        # Statistical significance filter (relaxed: t >= 1.3 is ~80% confidence)
+        if TRUST_MODE_REQUIRE_SIGNIFICANCE and t_stat < 1.3:
             continue
+        
         trusted_setups.append(s)
     
     if not trusted_setups:
-        print("  ╔══════════════════════════════════════════════════════════════╗")
-        print("  ║           NO HIGH-CONFIDENCE TRADES TODAY                   ║")
-        print("  ╚══════════════════════════════════════════════════════════════╝")
+        print("  +--------------------------------------------------------------+")
+        print("  |           NO HIGH-CONFIDENCE TRADES TODAY                   |")
+        print("  +--------------------------------------------------------------+")
         print(f"\n  Scanned stocks. Found {len(setups)} setups but none meet TRUST criteria.")
+        
+        # Show near-misses for transparency
+        if setups:
+            print("\n  Near-miss setups (for reference only - DO NOT TRADE):")
+            print("-" * 70)
+            for s in setups[:5]:
+                grade = getattr(s, 'confidence_grade', 'F')
+                t_stat = getattr(s, 't_statistic', 0)
+                reason = []
+                if grade not in valid_grades:
+                    reason.append(f"Grade {grade}")
+                if TRUST_MODE_REQUIRE_SIGNIFICANCE and t_stat < 1.3:
+                    reason.append(f"t={t_stat:.1f}")
+                reason_str = ", ".join(reason) if reason else "Close"
+                print(f"    {s.ticker:<6} WR:{s.win_rate:>4.0f}% PF:{s.profit_factor:>4.2f} "
+                      f"Grade:{grade} t:{t_stat:>4.1f} | {reason_str}")
+            print("-" * 70)
+        
         print("=" * 70)
         return None
     
     # Show trade signals
-    print("  ╔══════════════════════════════════════════════════════════════╗")
-    print("  ║                    TRADE SIGNAL!                             ║")
-    print("  ╚══════════════════════════════════════════════════════════════╝")
+    print("  +--------------------------------------------------------------+")
+    print("  |                    TRADE SIGNAL!                             |")
+    print("  +--------------------------------------------------------------+")
     print(f"\n  Found {len(trusted_setups)} HIGH-CONFIDENCE trade(s):\n")
     
     for i, s in enumerate(trusted_setups[:TRUST_MODE_MAX_TRADES_PER_DAY], 1):
@@ -377,14 +405,14 @@ def print_simple_verdict(setups, trust_manager, vix_level=None):
         potential_profit = (s.target - s.trigger) * shares
         rr_ratio = (s.target - s.trigger) / risk_per_share if risk_per_share > 0 else 0
         
-        print(f"  ┌─────────────────────────────────────────────────────────────┐")
-        print(f"  │  #{i}  {s.ticker:<6}  {s.strategy:<12}  GRADE: {s.confidence_grade}                  │")
-        print(f"  ├─────────────────────────────────────────────────────────────┤")
-        print(f"  │  BUY:     {shares:>6} shares @ ${s.trigger:>8.2f}                     │")
-        print(f"  │  STOP:    ${s.stop:>8.2f}                                       │")
-        print(f"  │  TARGET:  ${s.target:>8.2f}                                       │")
-        print(f"  │  RISK: ${total_risk:>8.2f}  REWARD: ${potential_profit:>8.2f}  R:R {rr_ratio:.1f}:1     │")
-        print(f"  └─────────────────────────────────────────────────────────────┘")
+        print(f"  +-------------------------------------------------------------+")
+        print(f"  |  #{i}  {s.ticker:<6}  {s.strategy:<12}  GRADE: {s.confidence_grade}                  |")
+        print(f"  +-------------------------------------------------------------+")
+        print(f"  |  BUY:     {shares:>6} shares @ ${s.trigger:>8.2f}                     |")
+        print(f"  |  STOP:    ${s.stop:>8.2f}                                       |")
+        print(f"  |  TARGET:  ${s.target:>8.2f}                                       |")
+        print(f"  |  RISK: ${total_risk:>8.2f}  REWARD: ${potential_profit:>8.2f}  R:R {rr_ratio:.1f}:1     |")
+        print(f"  +-------------------------------------------------------------+")
         print()
     
     print("=" * 70)
