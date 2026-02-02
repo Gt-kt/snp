@@ -58,9 +58,9 @@
       "ticker": "GE",
       "strategy": "BREAKOUT",
       "first_seen": "2026-02-01T13:34:00.458615",
-      "last_seen": "2026-02-01T13:43:58.953748",
+      "last_seen": "2026-02-03T07:50:57.973579",
       "entry_price": 330.16999389648436,
-      "current_price": 306.7900085449219,
+      "current_price": 308.7099914550781,
       "stop": 311.22428466796873,
       "target": 363.3249850463867,
       "win_rate": 79.41176470588235,
@@ -70,15 +70,15 @@
       "status": "WATCHING",
       "triggered_price": null,
       "triggered_date": null,
-      "days_tracked": 0
+      "days_tracked": 1
     },
     "PCAR": {
       "ticker": "PCAR",
       "strategy": "BREAKOUT",
       "first_seen": "2026-02-01T13:34:00.460034",
-      "last_seen": "2026-02-01T13:43:58.954734",
+      "last_seen": "2026-02-03T07:50:57.974604",
       "entry_price": 125.38000061035156,
-      "current_price": 122.91000366210938,
+      "current_price": 124.61000061035156,
       "stop": 119.67428488595145,
       "target": 135.36500312805174,
       "win_rate": 77.77777777777779,
@@ -88,15 +88,15 @@
       "status": "WATCHING",
       "triggered_price": null,
       "triggered_date": null,
-      "days_tracked": 0
+      "days_tracked": 1
     },
     "HII": {
       "ticker": "HII",
       "strategy": "BREAKOUT",
       "first_seen": "2026-02-01T13:34:00.461198",
-      "last_seen": "2026-02-01T13:34:00.461205",
+      "last_seen": "2026-02-03T07:50:57.975427",
       "entry_price": 436.1600146484375,
-      "current_price": 420.510009765625,
+      "current_price": 420.29998779296875,
       "stop": 407.60429827008926,
       "target": 486.13251831054686,
       "win_rate": 80.95238095238095,
@@ -106,7 +106,7 @@
       "status": "WATCHING",
       "triggered_price": null,
       "triggered_date": null,
-      "days_tracked": 0
+      "days_tracked": 1
     },
     "NVDA": {
       "ticker": "NVDA",
