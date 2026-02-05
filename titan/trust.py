@@ -405,10 +405,12 @@ def print_simple_verdict(setups, trust_manager, vix_level=None):
         potential_profit = (s.target - s.trigger) * shares
         rr_ratio = (s.target - s.trigger) / risk_per_share if risk_per_share > 0 else 0
         
+        dist_pct = ((s.trigger - s.price) / s.price) * 100
+        
         print(f"  +-------------------------------------------------------------+")
         print(f"  |  #{i}  {s.ticker:<6}  {s.strategy:<12}  GRADE: {s.confidence_grade}                  |")
         print(f"  +-------------------------------------------------------------+")
-        print(f"  |  BUY:     {shares:>6} shares @ ${s.trigger:>8.2f}                     |")
+        print(f"  |  BUY:     {shares:>6} shares @ ${s.trigger:>8.2f}  (WAIT: {dist_pct:>4.1f}%)        |")
         print(f"  |  STOP:    ${s.stop:>8.2f}                                       |")
         print(f"  |  TARGET:  ${s.target:>8.2f}                                       |")
         print(f"  |  RISK: ${total_risk:>8.2f}  REWARD: ${potential_profit:>8.2f}  R:R {rr_ratio:.1f}:1     |")
