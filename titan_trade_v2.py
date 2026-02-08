@@ -156,8 +156,13 @@ def get_market_data(tickers_override=None, cache_ttl_hours=DEFAULT_OHLCV_TTL_HOU
     return tickers, data
 
 
-def process_ticker(ticker, data, mkt_status, spy_close, settings):
-    """Process a single ticker and return setup if valid."""
+def process_ticker(ticker, data, mkt_status, spy_close, settings,
+                   spy_df=None, all_stock_returns=None):
+    """Process a single ticker and return setup if valid.
+
+    Enhanced with momentum scoring, volume accumulation detection,
+    and relative strength ranking for better stock selection.
+    """
     try:
         # Extract dataframe
         if isinstance(data.columns, pd.MultiIndex):
@@ -166,50 +171,66 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings):
             df = data[ticker].copy()
         else:
             return None, "No Data", None
-        
+
         required_cols = ["Open", "High", "Low", "Close", "Volume"]
         if any(col not in df.columns for col in required_cols):
             return None, "No Data", None
         df = df[required_cols].dropna()
-        
+
         if len(df) < 250:
             return None, "No Data", None
-        
+
         # Basic filters
         c = float(df['Close'].iloc[-1])
         if c < 5.0:
             return None, "Low Price/Liquidity", None
-        
+
         vol_avg = df['Volume'].rolling(20).mean().iloc[-1]
         dollar_vol = vol_avg * c
-        
+
         if dollar_vol < MIN_AVG_DOLLAR_VOLUME or vol_avg < MIN_AVG_VOLUME:
             return None, "Low Price/Liquidity", None
-        
+
         # ATR check
         atr = atr_series(df).iloc[-1]
         if pd.isna(atr) or atr <= 0 or atr / c > 0.10:
             return None, "Low Price/Liquidity", None
-        
+
         # Trend check
         sma50 = df['Close'].rolling(50).mean().iloc[-1]
         sma200 = df['Close'].rolling(200).mean().iloc[-1]
-        
+
         if c < sma200:
             return None, "Downtrend (Bear)", None
-        
+
         # Setup detection
         is_breakout = c > sma50 > sma200
         is_dip = -0.03 < (c - sma50) / sma50 < 0.04 and c > sma200
-        
+
         if not (is_breakout or is_dip):
             return None, "No Setup (VCP/Dip)", None
-        
+
         # Gap risk check
         validator = StrategyValidator(df)
         if GAP_PROTECTION and not validator.check_gap_risk():
             return None, "Gap Risk", None
-        
+
+        # --- NEW: Calculate enhanced selection signals ---
+        accum_score = validator.volume_accumulation_score()
+        mom_score = validator.momentum_composite_score()
+
+        # Relative strength percentile (vs all scanned stocks)
+        rs_pct = 50.0
+        if spy_df is not None and len(spy_df) > 0:
+            rs_pct = validator.rs_percentile_rank(
+                spy_df, all_returns=all_stock_returns, lookback=63
+            )
+
+        # Early filter: reject stocks with weak momentum AND weak accumulation
+        # This eliminates laggards before expensive backtesting
+        if mom_score < 30 and accum_score < 25:
+            return None, "No Setup (VCP/Dip)", None
+
         # Backtest
         if is_breakout:
             res = validator.backtest_breakout(return_trades=True)
@@ -223,9 +244,9 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings):
             min_wr = settings.get('min_winrate_dip', DEFAULT_MIN_WIN_RATE_DIP)
             min_pf = settings.get('min_pf_dip', DEFAULT_MIN_PF_DIP)
             min_trades = settings.get('min_trades_dip', DEFAULT_MIN_TRADES_DIP)
-        
+
         res['expectancy'] = expectancy(res.get('trades_list', []))
-        
+
         # Quality filter - Need profitable backtest results
         if res['trades'] < min_trades:
             return None, "Rejected (Quality)", f"Trades: {res['trades']} < {min_trades}"
@@ -233,31 +254,31 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings):
             return None, "Rejected (Quality)", f"WR: {res['win_rate']:.0f}% < {min_wr:.0f}%"
         if res['pf'] < min_pf:
             return None, "Rejected (Quality)", f"PF: {res['pf']:.2f} < {min_pf:.2f}"
-        
+
         # Calculate setup
         trigger = float(df['High'].iloc[-16:-1].max()) + 0.02 if is_breakout else c
         stop = trigger - (atr * 2)
         target = trigger + (atr * 3.5)
-        
+
         risk_per_share = trigger - stop
         if risk_per_share <= 0:
             return None, "Bad Risk/Reward", None
-        
+
         rr_ratio = (target - trigger) / risk_per_share
         if rr_ratio < 1.5:
             return None, "Bad Risk/Reward", None
-        
+
         # Earnings check
         is_blackout, reason = EarningsCalendar.is_in_blackout(ticker)
         if is_blackout:
             return None, "Earnings Risk", None
-        
+
         # Position sizing
         risk_amt = min(RISK_PER_TRADE, ACCOUNT_SIZE * MAX_RISK_PCT_PER_TRADE / 100)
         shares = max(1, int(risk_amt / risk_per_share))
         max_shares = DataValidator.max_position_size(vol_avg, c, MAX_POSITION_PCT_OF_VOLUME)
         shares = min(shares, max_shares) if max_shares > 0 else shares
-        
+
         # Statistical confidence
         trades_list = res.get('trades_list', [])
         stat_conf = StatisticalConfidenceScorer.calculate_confidence(
@@ -267,17 +288,53 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings):
             expectancy=res.get('expectancy', 0)
         )
         t_stat = StatisticalConfidenceScorer.calculate_t_statistic(trades_list)
-        
-        # Trend analysis
-        trend = TrendQualityAnalyzer.analyze(df, res)
-        
-        # Score
+
+        # Trend analysis - enhanced with new signals
+        trend = TrendQualityAnalyzer.analyze(
+            df, res,
+            accumulation_score=accum_score,
+            momentum_score=mom_score,
+            rs_percentile=rs_pct
+        )
+
+        # --- Enhanced composite score ---
+        # Base: backtest quality
         score = res['win_rate'] + (res['pf'] * 10)
+
+        # Momentum bonus (0-15 pts): stocks going up tend to keep going up
+        if mom_score >= 70:
+            score += 15
+        elif mom_score >= 55:
+            score += 10
+        elif mom_score >= 40:
+            score += 5
+
+        # Accumulation bonus (0-12 pts): institutional buying = smart money
+        if accum_score >= 70:
+            score += 12
+        elif accum_score >= 50:
+            score += 8
+        elif accum_score >= 35:
+            score += 4
+
+        # Relative strength bonus (0-10 pts): leaders outperform
+        if rs_pct >= 80:
+            score += 10
+        elif rs_pct >= 65:
+            score += 7
+        elif rs_pct >= 50:
+            score += 3
+
+        # Market regime bonus
         if mkt_status == "BULL":
             score += 10
+
+        # Statistical significance bonus
         if t_stat >= 2.0:
             score += 10
-        
+        elif t_stat >= 1.5:
+            score += 5
+
         # Kelly
         W = res['win_rate'] / 100
         wins = [t for t in trades_list if t > 0]
@@ -286,14 +343,15 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings):
         avg_loss = abs(np.mean(losses)) if losses else 0.01
         R = avg_win / (avg_loss + 1e-9)
         kelly = max(0, (W * R - (1 - W)) / R) * 0.25 * 100
-        
+
         # Get sector and earnings info
         sector = SectorMapper.get_sector(ticker)
         earnings_date, days_to = EarningsCalendar.get_earnings_date(ticker)
         earnings_call = f"{days_to:+d}d" if days_to else "Unknown"
-        
-        note = f"N={res['trades']} | {stat_conf['grade']} | {trend['trend_grade']}"
-        
+
+        note = (f"N={res['trades']} | {stat_conf['grade']} | {trend['trend_grade']}"
+                f" | Mom:{mom_score:.0f} Acc:{accum_score:.0f} RS:{rs_pct:.0f}")
+
         setup = TitanSetup(
             ticker=ticker,
             strategy=strategy_name,
@@ -312,77 +370,104 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings):
             confidence_score=stat_conf['score'],
             confidence_grade=stat_conf['grade'],
             trend_grade=trend['trend_grade'],
-            t_statistic=t_stat
+            t_statistic=t_stat,
+            momentum_score=mom_score,
+            accumulation_score=accum_score,
+            rs_percentile=rs_pct,
         )
-        
+
         return setup, "Passed", None
-        
+
     except Exception as e:
         return None, "Error", None
 
 
 def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS):
-    """Main scanning function."""
-    
+    """Main scanning function.
+
+    Enhanced with pre-computed relative strength rankings so every
+    stock is compared against the full universe for better selection.
+    """
+
     if settings is None:
         settings = {}
-    
+
     # Get data
     tickers, data = get_market_data(tickers_override)
-    
+
     # Get SPY data
     spy_close = None
+    spy_df = None
     if isinstance(data.columns, pd.MultiIndex) and "SPY" in data.columns.levels[0]:
         spy_df = data["SPY"].dropna()
         if "Close" in spy_df:
             spy_close = spy_df["Close"]
-    
+
     # Analyze market regime
     regime = MarketRegime(data)
     mkt_status, mkt_score, vix_level = regime.analyze_spy()
-    
+
     print(f"\n  Market Status: {mkt_status} (Score: {mkt_score:.2f})")
     if vix_level:
         print(f"  VIX Level: {vix_level:.1f}")
-    
+
     # Check VIX panic
     if vix_level and vix_level > VIX_PANIC_THRESHOLD:
         print(f"\n  VIX PANIC ({vix_level:.1f}) - No trading allowed!")
         return [], {}, [], vix_level
-    
+
     if mkt_score == 0:
         print("\n  BEAR MARKET - No new long positions recommended!")
-    
+
+    # Pre-compute 63-day returns for all stocks (for RS percentile ranking)
+    print("  Computing relative strength rankings...")
+    all_stock_returns = {}
+    lookback = 63
+    for t in tickers:
+        try:
+            if isinstance(data.columns, pd.MultiIndex) and t in data.columns.levels[0]:
+                t_close = data[t]['Close'].dropna()
+                if len(t_close) > lookback:
+                    ret = (t_close.iloc[-1] / t_close.iloc[-lookback] - 1) * 100
+                    all_stock_returns[t] = float(ret)
+        except Exception:
+            pass
+
     # Scan
-    print(f"\n  Scanning {len(tickers)} stocks...")
-    
+    print(f"  Scanning {len(tickers)} stocks...")
+
     results = []
     tracker = RejectionTracker()
-    
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(process_ticker, t, data, mkt_status, spy_close, settings): t
+            executor.submit(
+                process_ticker, t, data, mkt_status, spy_close, settings,
+                spy_df=spy_df, all_stock_returns=all_stock_returns
+            ): t
             for t in tickers
         }
-        
+
         completed = 0
         for future in concurrent.futures.as_completed(futures):
             completed += 1
             if completed % 50 == 0:
                 print(f"    Progress: {completed}/{len(tickers)}", end='\r')
-            
+
             try:
                 setup, reason, _ = future.result()
                 tracker.update(reason)
                 if setup:
                     results.append(setup)
-                    print(f"    Found: {setup.ticker} ({setup.strategy}) WR:{setup.win_rate:.0f}%")
+                    print(f"    Found: {setup.ticker} ({setup.strategy}) "
+                          f"WR:{setup.win_rate:.0f}% Mom:{setup.momentum_score:.0f} "
+                          f"RS:{setup.rs_percentile:.0f}")
             except Exception:
                 tracker.update("Error")
-    
+
     print()
-    
-    # Apply sector limits
+
+    # Apply sector limits - sort by enhanced score
     if results:
         results.sort(key=lambda x: x.score, reverse=True)
         sector_count = {}
@@ -396,7 +481,7 @@ def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS):
             sector_count[sector] = sector_count.get(sector, 0) + 1
             filtered.append(s)
         results = filtered
-    
+
     return results, tracker.summary(), [], vix_level
 
 
@@ -526,11 +611,12 @@ def main():
                     s.ticker, s.strategy[:4], f"${s.price:.2f}",
                     f"${s.trigger:.2f}", s.confidence_grade,
                     f"{s.win_rate:.0f}%", f"{s.profit_factor:.2f}",
+                    f"{s.momentum_score:.0f}", f"{s.rs_percentile:.0f}",
                     f"${s.stop:.2f}", f"${s.target:.2f}", s.qty
                 ])
             print(tabulate(table, headers=[
                 "Ticker", "Type", "Price", "Trigger", "Grade",
-                "Win%", "PF", "Stop", "Target", "Shares"
+                "Win%", "PF", "Mom", "RS%", "Stop", "Target", "Shares"
             ], tablefmt="grid"))
         else:
             print("\n  No valid setups found.")

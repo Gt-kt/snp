@@ -19,7 +19,8 @@ from .config import *
 
 # Utilities
 from .utils import (
-    atr_series, calculate_rsi, expectancy, ensure_multiindex,
+    atr_series, calculate_rsi, calculate_ema, calculate_obv,
+    multi_timeframe_momentum, expectancy, ensure_multiindex,
     parse_tickers, load_tickers_from_file, resolve_output_paths
 )
 

@@ -7,7 +7,7 @@ Strategy backtesting and validation logic.
 import numpy as np
 import pandas as pd
 
-from .utils import atr_series, calculate_rsi
+from .utils import atr_series, calculate_rsi, calculate_obv, calculate_ema, multi_timeframe_momentum
 from .config import MAX_GAP_PCT
 
 
@@ -48,7 +48,122 @@ class StrategyValidator:
         current = self.df['Close'].iloc[-1]
         return current >= high_52w * 0.95
     
-    def _simulate_trade(self, entry, stop, target, ohlc_data, start_idx, 
+    def volume_accumulation_score(self, lookback=60):
+        """Detect institutional accumulation via OBV trend and volume patterns.
+
+        Returns 0-100 score where higher means stronger accumulation.
+        Combines:
+        - OBV trend direction (is smart money buying?)
+        - Volume on up-days vs down-days ratio
+        - Recent volume surge relative to baseline
+        """
+        df = self.df
+        if len(df) < lookback + 20:
+            return 50.0
+
+        recent = df.iloc[-lookback:]
+        close = recent['Close']
+        volume = recent['Volume']
+
+        score = 0.0
+
+        # 1. OBV trend (0-40 points): Is OBV making higher highs?
+        obv = calculate_obv(close, volume)
+        obv_sma20 = obv.rolling(20).mean()
+        if len(obv_sma20.dropna()) >= 5:
+            obv_current = obv.iloc[-1]
+            obv_ma = obv_sma20.iloc[-1]
+            obv_ma_prev = obv_sma20.iloc[-20] if len(obv_sma20) >= 20 else obv_sma20.dropna().iloc[0]
+            # OBV above its moving average = accumulation
+            if obv_current > obv_ma:
+                score += 20
+            # OBV moving average rising = sustained accumulation
+            if obv_ma > obv_ma_prev:
+                score += 20
+
+        # 2. Up-volume vs down-volume ratio (0-35 points)
+        price_change = close.diff()
+        up_vol = volume[price_change > 0].sum()
+        down_vol = volume[price_change < 0].sum()
+        if down_vol > 0:
+            vol_ratio = up_vol / down_vol
+            if vol_ratio >= 2.0:
+                score += 35
+            elif vol_ratio >= 1.5:
+                score += 28
+            elif vol_ratio >= 1.2:
+                score += 20
+            elif vol_ratio >= 1.0:
+                score += 10
+
+        # 3. Recent volume expansion (0-25 points): Are big players stepping in?
+        vol_10d = volume.iloc[-10:].mean()
+        vol_50d = volume.iloc[-50:].mean() if len(volume) >= 50 else volume.mean()
+        if vol_50d > 0:
+            expansion = vol_10d / vol_50d
+            if expansion >= 1.5:
+                score += 25
+            elif expansion >= 1.2:
+                score += 18
+            elif expansion >= 1.0:
+                score += 10
+            elif expansion >= 0.8:
+                score += 5
+
+        return min(100.0, score)
+
+    def momentum_composite_score(self):
+        """Calculate multi-timeframe momentum composite.
+
+        Stocks with strong momentum across multiple timeframes
+        are more likely to continue trending up. Returns 0-100.
+        """
+        df = self.df
+        if len(df) < 130:
+            return 50.0
+
+        close = df['Close']
+
+        # Multi-timeframe momentum (weighted ROC)
+        mtf = multi_timeframe_momentum(close)
+
+        # Convert to 0-100 score
+        # mtf typically ranges from -30 to +50 for S&P stocks
+        score = max(0, min(100, 50 + mtf * 2))
+
+        # Bonus: acceleration check - is momentum increasing?
+        if len(close) >= 42:
+            mom_recent = (close.iloc[-1] / close.iloc[-21] - 1) * 100
+            mom_prior = (close.iloc[-21] / close.iloc[-42] - 1) * 100
+            if mom_recent > mom_prior > 0:
+                # Accelerating upward momentum
+                score = min(100, score + 10)
+
+        return float(score)
+
+    def rs_percentile_rank(self, spy_df, all_returns=None, lookback=63):
+        """Calculate relative strength percentile rank vs the market.
+
+        When all_returns (dict of ticker->return) is provided, this
+        returns the percentile rank among all stocks. Otherwise falls
+        back to a score vs SPY alone. Top-quartile stocks (>75th pct)
+        are the strongest candidates.
+        """
+        if len(self.df) < lookback:
+            return 50.0
+
+        stock_ret = (self.df['Close'].iloc[-1] / self.df['Close'].iloc[-lookback] - 1) * 100
+
+        if all_returns is not None and len(all_returns) > 10:
+            returns_list = sorted(all_returns.values())
+            rank = sum(1 for r in returns_list if r <= stock_ret)
+            percentile = (rank / len(returns_list)) * 100
+            return float(percentile)
+
+        # Fallback: score vs SPY
+        return self.relative_strength_vs_spy(spy_df, lookback)
+
+    def _simulate_trade(self, entry, stop, target, ohlc_data, start_idx,
                        max_hold=10, trail_risk=None, trail_r1=1.0, 
                        trail_r2=2.0, trail_r3=3.0, slippage_pct=0.003):
         """Simulate a trade with realistic execution model."""
@@ -101,12 +216,15 @@ class StrategyValidator:
 
         return 0.0
 
-    def backtest_breakout(self, days=750, depth=0.22, vol_mult=1.0, 
+    def backtest_breakout(self, days=750, depth=0.22, vol_mult=1.0,
                          target_mult=2.5, stop_mult=2.0, return_trades=False):
         """Fast simulation of VCP Breakouts.
-        
-        Extended to 750 days (~3 years) for better sample size.
-        Relaxed volume multiplier to capture more valid setups.
+
+        Enhanced with:
+        - Volatility contraction detection (last 5d range < prior 15d range)
+        - Volume surge confirmation (breakout day volume >= 1.3x average)
+        - Tighter base quality: handle depth must shrink vs prior base
+        - Close in upper 45% of breakout day range
         """
         df = self.df.iloc[-days:].copy()
         if len(df) < 100:
@@ -114,77 +232,85 @@ class StrategyValidator:
             if return_trades:
                 base['trades_list'] = []
             return base
-        
+
         closes = df['Close'].values
         highs = df['High'].values
         lows = df['Low'].values
         opens = df['Open'].values
         volumes = df['Volume'].values
-        
+
         sma50 = df['Close'].rolling(50).mean().values
         sma200 = df['Close'].rolling(200).mean().values
         atr = atr_series(df).values
         vol_sma = df['Volume'].rolling(50).mean().values
-        
+        vol_sma20 = df['Volume'].rolling(20).mean().values
+
         trades = []
-        
+
         for i in range(60, len(df)-1):
             if not (closes[i] > sma50[i] > sma200[i]):
                 continue
             if i < 70:
                 continue
-            # Relaxed: only require 50 SMA rising (200 SMA takes too long)
             if not (sma50[i] > sma50[i-10]):
                 continue
             if atr[i] and closes[i] > 0 and (atr[i] / closes[i]) > 0.12:
                 continue
-            
+
             h_handle = np.max(highs[i-15:i+1])
             l_handle = np.min(lows[i-15:i+1])
             curr_c = closes[i]
-            
+
             d = (h_handle - l_handle) / h_handle
             if d > depth:
                 continue
 
-            # Relaxed 5-day range filter from 8% to 10%
+            # Volatility contraction: last 5 days range must be tighter
+            # than the full 15-day handle range (VCP signature)
             range_5 = (np.max(highs[i-5:i+1]) - np.min(lows[i-5:i+1])) / max(curr_c, 1e-9)
+            range_15 = (h_handle - l_handle) / max(curr_c, 1e-9)
             if range_5 > 0.10:
                 continue
-            
-            # Relaxed distance from handle high from 6% to 8%
+            # Contraction check: 5-day range should be smaller than 15-day
+            if range_15 > 0 and range_5 > range_15 * 0.85:
+                continue
+
+            # Close near handle high
             if (h_handle - curr_c) / h_handle > 0.08:
                 continue
-            
-            # Relaxed base volume filter
+
+            # Volume should be drying up in the base (contraction)
             if not np.isnan(vol_sma[i]):
                 base_vol = np.mean(volumes[i-15:i+1])
-                if base_vol > (vol_sma[i] * 1.3):  # Was 1.15
+                if base_vol > (vol_sma[i] * 1.3):
                     continue
-            
+
             atr_val = atr[i] if i < len(atr) and not np.isnan(atr[i]) else (curr_c * 0.02)
             pivot = h_handle + (atr_val * 0.05)
-            
+
             next_h = highs[i+1]
             next_l = lows[i+1]
             next_o = opens[i+1]
             next_c = closes[i+1]
             next_v = volumes[i+1]
             next_vol_sma = vol_sma[i+1] if i+1 < len(vol_sma) else np.nan
-            
+            next_vol_sma20 = vol_sma20[i+1] if i+1 < len(vol_sma20) else np.nan
+
             if next_h > pivot:
-                # Volume confirmation: just require above average (was 1.2x)
-                if not np.isnan(next_vol_sma) and next_v < (next_vol_sma * vol_mult):
+                # Volume surge confirmation: breakout day needs strong volume
+                # Use 20-day SMA for a more responsive comparison
+                vol_ref = next_vol_sma20 if not np.isnan(next_vol_sma20) else next_vol_sma
+                if not np.isnan(vol_ref) and next_v < (vol_ref * max(vol_mult, 1.3)):
                     continue
-                # Relaxed close above pivot from 0.5% to 1%
+                # Close above pivot
                 if next_c < (pivot * 0.99):
                     continue
                 day_range = max(next_h - next_l, 1e-9)
                 close_pos = (next_c - next_l) / day_range
-                # Relaxed close position from 50% to 40%
-                if close_pos < 0.40:
+                # Close in upper 45% of day range (strong close)
+                if close_pos < 0.45:
                     continue
-                
+
                 buy_price = max(pivot, next_o)
                 atr_val = atr[i] if i < len(atr) and not np.isnan(atr[i]) else (buy_price * 0.02)
                 stop_loss = buy_price - (atr_val * stop_mult)
@@ -197,21 +323,21 @@ class StrategyValidator:
                     i + 2, max_hold=10, trail_risk=risk, slippage_pct=0.003
                 )
                 trades.append(outcome_pct)
-        
+
         if not trades:
             base = {'win_rate': 0, 'pf': 0, 'trades': 0}
             if return_trades:
                 base['trades_list'] = []
             return base
-        
+
         wins = [t for t in trades if t > 0]
         losses = [t for t in trades if t <= 0]
-        
+
         win_rate = float(len(wins) / len(trades) * 100)
         gross_win = float(sum(wins))
         gross_loss = float(abs(sum(losses)))
         pf = float(gross_win / gross_loss if gross_loss > 0 else (100.0 if gross_win > 0 else 0))
-        
+
         res = {'win_rate': win_rate, 'pf': pf, 'trades': len(trades)}
         if return_trades:
             res['trades_list'] = trades
@@ -310,26 +436,31 @@ class StrategyValidator:
 
 
 class TrendQualityAnalyzer:
-    """Analyzes trend quality using technical factors."""
-    
+    """Analyzes trend quality using technical factors.
+
+    Enhanced with multi-timeframe momentum, volume accumulation,
+    and relative strength for better stock selection.
+    """
+
     @staticmethod
-    def analyze(df, backtest_res=None):
+    def analyze(df, backtest_res=None, accumulation_score=None,
+                momentum_score=None, rs_percentile=None):
         if len(df) < 200:
             return {"trend_score": 0, "trend_grade": "F", "factors": {}}
-        
+
         c = df['Close']
         h = df['High']
         v = df['Volume']
-        
+
         factors = {}
         score = 0
-        
-        # MA Alignment
+
+        # MA Alignment (0-20 pts)
         sma20 = c.rolling(20).mean().iloc[-1]
         sma50 = c.rolling(50).mean().iloc[-1]
         sma200 = c.rolling(200).mean().iloc[-1]
         curr = c.iloc[-1]
-        
+
         if curr > sma20 > sma50 > sma200:
             ma_alignment = 20
         elif curr > sma50 > sma200:
@@ -340,14 +471,14 @@ class TrendQualityAnalyzer:
             ma_alignment = 5
         else:
             ma_alignment = 0
-        
+
         factors["ma_alignment"] = ma_alignment
         score += ma_alignment
-        
-        # Distance from 52-week high
+
+        # Distance from 52-week high (0-15 pts)
         high_52w = h.iloc[-252:].max() if len(df) >= 252 else h.max()
         pct_from_high = (curr / high_52w - 1) * 100
-        
+
         if pct_from_high > -3:
             proximity_score = 15
         elif pct_from_high > -7:
@@ -358,15 +489,15 @@ class TrendQualityAnalyzer:
             proximity_score = 4
         else:
             proximity_score = 0
-        
+
         factors["proximity_to_high"] = proximity_score
         score += proximity_score
-        
-        # Volume trend
+
+        # Volume trend (0-10 pts)
         vol_20d = v.iloc[-20:].mean()
         vol_50d = v.iloc[-50:].mean()
         vol_ratio = vol_20d / (vol_50d + 1e-9)
-        
+
         if vol_ratio > 1.3:
             vol_score = 10
         elif vol_ratio > 1.0:
@@ -375,40 +506,73 @@ class TrendQualityAnalyzer:
             vol_score = 4
         else:
             vol_score = 0
-        
+
         factors["volume_trend"] = vol_score
         score += vol_score
-        
-        # Momentum
-        ret_20d = (curr / c.iloc[-21] - 1) * 100 if len(df) >= 21 else 0
-        ret_60d = (curr / c.iloc[-61] - 1) * 100 if len(df) >= 61 else 0
-        
-        if ret_20d > 5 and ret_60d > 10:
-            momentum_score = 15
-        elif ret_20d > 2 and ret_60d > 5:
-            momentum_score = 12
-        elif ret_20d > 0 and ret_60d > 0:
-            momentum_score = 8
-        elif ret_20d > -5 and ret_60d > -10:
-            momentum_score = 4
+
+        # Multi-timeframe momentum (0-15 pts) - enhanced
+        mtf_raw = multi_timeframe_momentum(c)
+        if mtf_raw > 15:
+            mtf_score = 15
+        elif mtf_raw > 8:
+            mtf_score = 12
+        elif mtf_raw > 3:
+            mtf_score = 8
+        elif mtf_raw > 0:
+            mtf_score = 4
         else:
-            momentum_score = 0
-        
-        factors["momentum"] = momentum_score
-        score += momentum_score
-        
-        # Grade
-        if score >= 50:
+            mtf_score = 0
+
+        factors["momentum"] = mtf_score
+        score += mtf_score
+
+        # Volume accumulation (0-15 pts) - NEW
+        if accumulation_score is not None:
+            if accumulation_score >= 75:
+                accum_pts = 15
+            elif accumulation_score >= 55:
+                accum_pts = 12
+            elif accumulation_score >= 40:
+                accum_pts = 8
+            elif accumulation_score >= 25:
+                accum_pts = 4
+            else:
+                accum_pts = 0
+            factors["accumulation"] = accum_pts
+            score += accum_pts
+
+        # Relative strength rank (0-15 pts) - NEW
+        if rs_percentile is not None:
+            if rs_percentile >= 85:
+                rs_pts = 15
+            elif rs_percentile >= 70:
+                rs_pts = 12
+            elif rs_percentile >= 55:
+                rs_pts = 8
+            elif rs_percentile >= 40:
+                rs_pts = 4
+            else:
+                rs_pts = 0
+            factors["relative_strength"] = rs_pts
+            score += rs_pts
+
+        # Momentum acceleration bonus (0-5 pts) - NEW
+        if momentum_score is not None and momentum_score >= 70:
+            factors["momentum_accel"] = 5
+            score += 5
+
+        # Grade - recalibrated for expanded scoring range (max ~100)
+        if score >= 65:
             grade = "A"
-        elif score >= 40:
+        elif score >= 50:
             grade = "B"
-        elif score >= 30:
+        elif score >= 35:
             grade = "C"
         elif score >= 20:
             grade = "D"
         else:
             grade = "F"
-        
+
         return {"trend_score": score, "trend_grade": grade, "factors": factors}
 
 
