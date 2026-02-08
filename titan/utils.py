@@ -90,17 +90,6 @@ def expectancy(trades):
     return float(np.mean(trades))
 
 
-def ensure_multiindex(data, tickers):
-    """Ensure data has MultiIndex columns."""
-    if isinstance(data.columns, pd.MultiIndex):
-        return data
-    if len(tickers) == 1:
-        fixed = data.copy()
-        fixed.columns = pd.MultiIndex.from_product([tickers, data.columns])
-        return fixed
-    raise ValueError("Downloaded data is missing ticker-level columns.")
-
-
 def ensure_dir(path):
     """Ensure directory exists."""
     if path and not os.path.exists(path):

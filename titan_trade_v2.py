@@ -156,12 +156,42 @@ def get_market_data(tickers_override=None, cache_ttl_hours=DEFAULT_OHLCV_TTL_HOU
     return tickers, data
 
 
+def _conviction_bonus(mom_score, accum_score, rs_pct):
+    """Calculate conviction bonus (0-10) from forward-looking signals.
+
+    This feeds into StatisticalConfidenceScorer via the consistency_score
+    parameter, adding bonus points for stocks with strong momentum,
+    institutional accumulation, and relative strength leadership.
+    """
+    bonus = 0.0
+    # Each signal contributes up to ~3.3 points
+    if mom_score >= 65:
+        bonus += 3.5
+    elif mom_score >= 50:
+        bonus += 2.0
+    elif mom_score >= 35:
+        bonus += 1.0
+    if accum_score >= 65:
+        bonus += 3.5
+    elif accum_score >= 45:
+        bonus += 2.0
+    elif accum_score >= 30:
+        bonus += 1.0
+    if rs_pct >= 75:
+        bonus += 3.0
+    elif rs_pct >= 60:
+        bonus += 2.0
+    elif rs_pct >= 45:
+        bonus += 1.0
+    return min(10.0, bonus)
+
+
 def process_ticker(ticker, data, mkt_status, spy_close, settings,
                    spy_df=None, all_stock_returns=None):
     """Process a single ticker and return setup if valid.
 
     Enhanced with momentum scoring, volume accumulation detection,
-    and relative strength ranking for better stock selection.
+    relative strength ranking, and blue sky breakout bonus.
     """
     try:
         # Extract dataframe
@@ -215,7 +245,7 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         if GAP_PROTECTION and not validator.check_gap_risk():
             return None, "Gap Risk", None
 
-        # --- NEW: Calculate enhanced selection signals ---
+        # Calculate enhanced selection signals
         accum_score = validator.volume_accumulation_score()
         mom_score = validator.momentum_composite_score()
 
@@ -226,10 +256,9 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
                 spy_df, all_returns=all_stock_returns, lookback=63
             )
 
-        # Early filter: reject stocks with weak momentum AND weak accumulation
-        # This eliminates laggards before expensive backtesting
+        # FIX: Use dedicated rejection reason instead of hiding behind "No Setup"
         if mom_score < 30 and accum_score < 25:
-            return None, "No Setup (VCP/Dip)", None
+            return None, "Rejected (Low Win%)", "Weak momentum + accumulation"
 
         # Backtest
         if is_breakout:
@@ -279,13 +308,15 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         max_shares = DataValidator.max_position_size(vol_avg, c, MAX_POSITION_PCT_OF_VOLUME)
         shares = min(shares, max_shares) if max_shares > 0 else shares
 
-        # Statistical confidence
+        # Statistical confidence — now includes conviction bonus
         trades_list = res.get('trades_list', [])
+        conviction_bonus = _conviction_bonus(mom_score, accum_score, rs_pct)
         stat_conf = StatisticalConfidenceScorer.calculate_confidence(
             trades=res['trades'],
             win_rate=res['win_rate'],
             profit_factor=res['pf'],
-            expectancy=res.get('expectancy', 0)
+            expectancy=res.get('expectancy', 0),
+            consistency_score=conviction_bonus,
         )
         t_stat = StatisticalConfidenceScorer.calculate_t_statistic(trades_list)
 
@@ -324,6 +355,12 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             score += 7
         elif rs_pct >= 50:
             score += 3
+
+        # FIX: Blue sky breakout bonus (0-8 pts)
+        # Stocks near 52-week highs have no overhead resistance.
+        # Breakouts into blue sky have highest follow-through rate.
+        if is_breakout and validator.is_blue_sky_breakout():
+            score += 8
 
         # Market regime bonus
         if mkt_status == "BULL":
@@ -379,6 +416,7 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         return setup, "Passed", None
 
     except Exception as e:
+        logging.getLogger("titan").debug(f"Error processing {ticker}: {e}")
         return None, "Error", None
 
 
