@@ -43,7 +43,10 @@ from titan import (
     DEFAULT_MIN_WIN_RATE_BREAKOUT, DEFAULT_MIN_WIN_RATE_DIP,
     DEFAULT_MIN_PF_BREAKOUT, DEFAULT_MIN_PF_DIP,
     DEFAULT_MIN_TRADES_BREAKOUT, DEFAULT_MIN_TRADES_DIP,
+    DEFAULT_MIN_EXPECTANCY_BREAKOUT, DEFAULT_MIN_EXPECTANCY_DIP,
     DEFAULT_REGIME_FACTORS, TRUST_MODE_SETTINGS,
+    V2_OOS_SPLIT_PCT, V2_OOS_MIN_TRADES, V2_OOS_MIN_PF,
+    V2_OOS_DECAY_THRESHOLD,
     
     # Classes
     MarketHours, MarketRegime, SectorMapper, EarningsCalendar,
@@ -284,6 +287,51 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         if res['pf'] < min_pf:
             return None, "Rejected (Quality)", f"PF: {res['pf']:.2f} < {min_pf:.2f}"
 
+        # Expectancy filter - reject if average trade is near zero or negative
+        min_exp = (settings.get('min_expectancy_breakout', DEFAULT_MIN_EXPECTANCY_BREAKOUT)
+                   if is_breakout else
+                   settings.get('min_expectancy_dip', DEFAULT_MIN_EXPECTANCY_DIP))
+        if res['expectancy'] < min_exp:
+            return None, "Rejected (Quality)", f"Exp: {res['expectancy']:.4f} < {min_exp:.4f}"
+
+        # --- Out-of-sample validation ---
+        # Run the backtest again but only on the last 25% of data.
+        # Indicators (SMA, ATR) still use the full history for accuracy,
+        # but entries are restricted to the OOS window. This reveals
+        # whether the edge holds in recent data or is overfit to the past.
+        backtest_days = 750
+        oos_start = int(backtest_days * (1 - V2_OOS_SPLIT_PCT))
+        oos_pf = None
+        oos_wr = None
+        oos_trades = 0
+        oos_penalty = 0
+
+        if is_breakout:
+            oos_res = validator.backtest_breakout(
+                return_trades=True, min_entry_idx=oos_start)
+        else:
+            oos_res = validator.backtest_dip(
+                return_trades=True, min_entry_idx=oos_start)
+
+        oos_trades = oos_res.get('trades', 0)
+        if oos_trades >= V2_OOS_MIN_TRADES:
+            oos_pf = oos_res.get('pf', 0)
+            oos_wr = oos_res.get('win_rate', 0)
+
+            # Hard reject: OOS is clearly unprofitable
+            if oos_pf < 0.8 and oos_trades >= 5:
+                return None, "Rejected (OOS)", (
+                    f"OOS PF: {oos_pf:.2f} (N={oos_trades})")
+
+            # Confidence penalty: OOS below breakeven threshold
+            if oos_pf < V2_OOS_MIN_PF:
+                oos_penalty += 10
+
+            # Confidence penalty: win rate decayed significantly
+            wr_drop = (res['win_rate'] - oos_wr) / 100.0
+            if wr_drop > V2_OOS_DECAY_THRESHOLD:
+                oos_penalty += 8
+
         # Calculate setup
         trigger = float(df['High'].iloc[-16:-1].max()) + 0.02 if is_breakout else c
         stop = trigger - (atr * 2)
@@ -312,13 +360,33 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         # Forward-looking signals (momentum/accumulation/RS) are only used
         # in the composite score for ranking, NOT in the confidence grade.
         # This prevents double-counting and keeps the grade honest.
+        # OOS profit factor is passed in when available to reward strategies
+        # whose edge holds up in recent unseen data.
         trades_list = res.get('trades_list', [])
         stat_conf = StatisticalConfidenceScorer.calculate_confidence(
             trades=res['trades'],
             win_rate=res['win_rate'],
             profit_factor=res['pf'],
             expectancy=res.get('expectancy', 0),
+            oos_pf=oos_pf,
         )
+
+        # Apply OOS penalty — downgrade confidence when recent data
+        # shows the edge is weaker than the full backtest suggests
+        stat_conf['score'] = max(0, stat_conf['score'] - oos_penalty)
+        # Recalculate grade after penalty
+        adj_score = stat_conf['score']
+        if adj_score >= 70:
+            stat_conf['grade'] = 'A'
+        elif adj_score >= 55:
+            stat_conf['grade'] = 'B'
+        elif adj_score >= 40:
+            stat_conf['grade'] = 'C'
+        elif adj_score >= 25:
+            stat_conf['grade'] = 'D'
+        else:
+            stat_conf['grade'] = 'F'
+
         t_stat = StatisticalConfidenceScorer.calculate_t_statistic(trades_list)
 
         # Trend analysis - enhanced with new signals
@@ -387,8 +455,17 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         earnings_date, days_to = EarningsCalendar.get_earnings_date(ticker)
         earnings_call = f"{days_to:+d}d" if days_to else "Unknown"
 
+        oos_tag = ""
+        if oos_pf is not None:
+            oos_tag = f" | OOS:{oos_wr:.0f}%/{oos_pf:.2f}(N={oos_trades})"
+        elif oos_trades > 0:
+            oos_tag = f" | OOS:low-N({oos_trades})"
+        else:
+            oos_tag = " | OOS:no-data"
+
         note = (f"N={res['trades']} | {stat_conf['grade']} | {trend['trend_grade']}"
-                f" | Mom:{mom_score:.0f} Acc:{accum_score:.0f} RS:{rs_pct:.0f}")
+                f" | Mom:{mom_score:.0f} Acc:{accum_score:.0f} RS:{rs_pct:.0f}"
+                f"{oos_tag}")
 
         setup = TitanSetup(
             ticker=ticker,
@@ -665,6 +742,14 @@ def main():
     for k, v in stats.items():
         if v > 0:
             print(f"    {k}: {v}")
+
+    # Survivorship bias warning — always shown so users don't over-trust
+    print("\n  " + "-" * 56)
+    print("  NOTE: Backtests use CURRENT S&P 500 members only.")
+    print("  Stocks removed from the index (often after declines)")
+    print("  are excluded, which can inflate historical win rates.")
+    print("  OOS column in notes shows recent out-of-sample check.")
+    print("  " + "-" * 56)
 
 
 if __name__ == "__main__":
