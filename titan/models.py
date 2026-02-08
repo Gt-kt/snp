@@ -28,6 +28,9 @@ class TitanSetup:
     confidence_grade: str = "F"
     trend_grade: str = "F"
     t_statistic: float = 0.0
+    momentum_score: float = 0.0
+    accumulation_score: float = 0.0
+    rs_percentile: float = 0.0
 
 
 class RejectionTracker:

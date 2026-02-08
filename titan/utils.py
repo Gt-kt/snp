@@ -46,6 +46,43 @@ def ensure_multiindex(data, tickers):
     raise ValueError("Downloaded data is missing ticker-level columns.")
 
 
+def calculate_ema(series, period):
+    """Calculate Exponential Moving Average."""
+    return series.ewm(span=period, adjust=False).mean()
+
+
+def calculate_obv(close, volume):
+    """Calculate On-Balance Volume (OBV).
+
+    OBV accumulates volume on up days and subtracts on down days,
+    revealing institutional accumulation/distribution.
+    """
+    direction = np.sign(close.diff())
+    direction.iloc[0] = 0
+    obv = (volume * direction).cumsum()
+    return obv
+
+
+def multi_timeframe_momentum(close, periods=(21, 63, 126)):
+    """Calculate weighted multi-timeframe momentum score.
+
+    Combines 1-month, 3-month, and 6-month rate-of-change with
+    heavier weighting on recent momentum. Returns a composite
+    score where higher values indicate stronger sustained momentum.
+
+    Weights: 1-month=0.4, 3-month=0.35, 6-month=0.25
+    """
+    weights = (0.40, 0.35, 0.25)
+    if len(close) < max(periods) + 1:
+        return 0.0
+
+    score = 0.0
+    for period, weight in zip(periods, weights):
+        roc = (close.iloc[-1] / close.iloc[-period - 1] - 1) * 100
+        score += roc * weight
+    return float(score)
+
+
 def expectancy(trades):
     """Calculate expectancy from list of trade returns."""
     if not trades:
