@@ -48,6 +48,7 @@ class RejectionTracker:
             "Bad Risk/Reward": 0,
             "Earnings Risk": 0,
             "Gap Risk": 0,
+            "Rejected (OOS)": 0,
             "WF Filter": 0,
             "OOS Filter": 0,
             "Regime Filter": 0,

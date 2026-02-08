@@ -249,6 +249,17 @@ TRUST_MODE_VIX_CAUTION = 18
 TRUST_MODE_VIX_HALT = 25
 
 # =============================================================================
+# V2 OUT-OF-SAMPLE VALIDATION
+# =============================================================================
+# OOS validation runs the backtest on only the last portion of data to check
+# whether the strategy edge persists in recent (unseen) data. This is the
+# single most important check for trusting backtest results.
+V2_OOS_SPLIT_PCT = 0.25  # Last 25% of backtest window is out-of-sample
+V2_OOS_MIN_TRADES = 3  # Minimum trades in OOS window to be meaningful
+V2_OOS_MIN_PF = 0.95  # OOS profit factor below this triggers grade penalty
+V2_OOS_DECAY_THRESHOLD = 0.15  # Win rate drop > 15% vs IS triggers penalty
+
+# =============================================================================
 # MISC
 # =============================================================================
 DEFAULT_OUTPUT_DIR = "."

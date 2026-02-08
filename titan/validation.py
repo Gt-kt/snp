@@ -220,12 +220,17 @@ class StrategyValidator:
         return 0.0
 
     def backtest_breakout(self, days=750, depth=0.22, vol_mult=1.0,
-                         target_mult=2.5, stop_mult=2.0, return_trades=False):
+                         target_mult=2.5, stop_mult=2.0, return_trades=False,
+                         min_entry_idx=None):
         """Fast simulation of VCP Breakouts.
 
         No lookahead bias: day i = base detected, day i+1 = breakout
         confirmed at close, day i+2 = entry at open. All confirmation
         uses data available before the entry decision.
+
+        Args:
+            min_entry_idx: If set, only consider entries at or after this
+                index into the sliced dataframe. Used for OOS validation.
         """
         df = self.df.iloc[-days:].copy()
         if len(df) < 100:
@@ -248,8 +253,10 @@ class StrategyValidator:
 
         trades = []
 
+        entry_start = max(60, min_entry_idx) if min_entry_idx is not None else 60
+
         # Need i+2 for entry, so stop 2 before end
-        for i in range(60, len(df)-2):
+        for i in range(entry_start, len(df)-2):
             if not (closes[i] > sma50[i] > sma200[i]):
                 continue
             if i < 70:
@@ -331,7 +338,7 @@ class StrategyValidator:
                 outcome_pct = self._simulate_trade(
                     buy_price, stop_loss, target,
                     (closes, highs, lows, opens),
-                    i + 3, max_hold=10, trail_risk=risk, slippage_pct=0.003
+                    i + 2, max_hold=10, trail_risk=risk, slippage_pct=0.003
                 )
                 trades.append(outcome_pct)
 
@@ -354,7 +361,8 @@ class StrategyValidator:
             res['trades_list'] = trades
         return res
 
-    def backtest_dip(self, days=750, stop_mult=2.0, target_mult=3.0, return_trades=False):
+    def backtest_dip(self, days=750, stop_mult=2.0, target_mult=3.0, return_trades=False,
+                     min_entry_idx=None):
         """Fast simulation of Dip Buys (SMA50 support).
 
         Fixed issues from audit:
@@ -362,6 +370,10 @@ class StrategyValidator:
         - Require SMA200 rising (filters out bear market rallies)
         - Added trailing stop to lock in profits on winning dip trades
         - Added bounce candle quality check (close in upper half of range)
+
+        Args:
+            min_entry_idx: If set, only consider entries at or after this
+                index into the sliced dataframe. Used for OOS validation.
         """
         df = self.df.iloc[-days:].copy()
         if len(df) < 100:
@@ -383,7 +395,9 @@ class StrategyValidator:
 
         trades = []
 
-        for i in range(50, len(df)-5):
+        entry_start = max(50, min_entry_idx) if min_entry_idx is not None else 50
+
+        for i in range(entry_start, len(df)-5):
             # FIX: Price must be ABOVE 200 SMA (no 3% below allowance)
             if closes.iloc[i] < sma200.iloc[i]:
                 continue
@@ -445,7 +459,7 @@ class StrategyValidator:
                 outcome_pct = self._simulate_trade(
                     buy_price, stop, target,
                     (closes.values, highs.values, lows.values, opens.values),
-                    i + 2, max_hold=10, trail_risk=risk, slippage_pct=0.001
+                    i + 1, max_hold=10, trail_risk=risk, slippage_pct=0.001
                 )
                 trades.append(outcome_pct)
 
