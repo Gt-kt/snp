@@ -223,11 +223,9 @@ class StrategyValidator:
                          target_mult=2.5, stop_mult=2.0, return_trades=False):
         """Fast simulation of VCP Breakouts.
 
-        Enhanced with:
-        - Volatility contraction detection (last 5d range < prior 15d range)
-        - Volume surge confirmation (breakout day volume >= 1.3x average)
-        - Tighter base quality: handle depth must shrink vs prior base
-        - Close in upper 45% of breakout day range
+        No lookahead bias: day i = base detected, day i+1 = breakout
+        confirmed at close, day i+2 = entry at open. All confirmation
+        uses data available before the entry decision.
         """
         df = self.df.iloc[-days:].copy()
         if len(df) < 100:
@@ -250,7 +248,8 @@ class StrategyValidator:
 
         trades = []
 
-        for i in range(60, len(df)-1):
+        # Need i+2 for entry, so stop 2 before end
+        for i in range(60, len(df)-2):
             if not (closes[i] > sma50[i] > sma200[i]):
                 continue
             if i < 70:
@@ -274,7 +273,6 @@ class StrategyValidator:
             range_15 = (h_handle - l_handle) / max(curr_c, 1e-9)
             if range_5 > 0.10:
                 continue
-            # Contraction check: 5-day range should be smaller than 15-day
             if range_15 > 0 and range_5 > range_15 * 0.85:
                 continue
 
@@ -291,30 +289,40 @@ class StrategyValidator:
             atr_val = atr[i] if i < len(atr) and not np.isnan(atr[i]) else (curr_c * 0.02)
             pivot = h_handle + (atr_val * 0.05)
 
-            next_h = highs[i+1]
-            next_l = lows[i+1]
-            next_o = opens[i+1]
-            next_c = closes[i+1]
-            next_v = volumes[i+1]
-            next_vol_sma = vol_sma[i+1] if i+1 < len(vol_sma) else np.nan
-            next_vol_sma20 = vol_sma20[i+1] if i+1 < len(vol_sma20) else np.nan
+            # --- Day i+1: breakout confirmation day ---
+            # All checks below use end-of-day i+1 data. This is the
+            # CONFIRMATION day — we observe the breakout after close,
+            # then enter the next morning at day i+2 open.
+            bo_h = highs[i+1]
+            bo_l = lows[i+1]
+            bo_c = closes[i+1]
+            bo_v = volumes[i+1]
+            bo_vol_sma = vol_sma[i+1] if i+1 < len(vol_sma) else np.nan
+            bo_vol_sma20 = vol_sma20[i+1] if i+1 < len(vol_sma20) else np.nan
 
-            if next_h > pivot:
-                # Volume surge confirmation: breakout day needs strong volume
-                # Use 20-day SMA for a more responsive comparison
-                vol_ref = next_vol_sma20 if not np.isnan(next_vol_sma20) else next_vol_sma
-                if not np.isnan(vol_ref) and next_v < (vol_ref * max(vol_mult, 1.3)):
+            if bo_h > pivot:
+                # Volume surge confirmation
+                vol_ref = bo_vol_sma20 if not np.isnan(bo_vol_sma20) else bo_vol_sma
+                if not np.isnan(vol_ref) and bo_v < (vol_ref * max(vol_mult, 1.3)):
                     continue
-                # Close above pivot
-                if next_c < (pivot * 0.99):
+                # Close above pivot (confirmed at end of day)
+                if bo_c < (pivot * 0.99):
                     continue
-                day_range = max(next_h - next_l, 1e-9)
-                close_pos = (next_c - next_l) / day_range
+                day_range = max(bo_h - bo_l, 1e-9)
+                close_pos = (bo_c - bo_l) / day_range
                 # Close in upper 45% of day range (strong close)
                 if close_pos < 0.45:
                     continue
 
-                buy_price = max(pivot, next_o)
+                # --- Day i+2: ENTRY at open (no lookahead) ---
+                buy_price = opens[i+2]
+                # Reject if gap-up too large (>3% above pivot = chasing)
+                if buy_price > pivot * 1.03:
+                    continue
+                # Reject if gap-down below pivot (breakout failed overnight)
+                if buy_price < pivot * 0.97:
+                    continue
+
                 atr_val = atr[i] if i < len(atr) and not np.isnan(atr[i]) else (buy_price * 0.02)
                 stop_loss = buy_price - (atr_val * stop_mult)
                 target = buy_price + (atr_val * target_mult)
@@ -323,7 +331,7 @@ class StrategyValidator:
                 outcome_pct = self._simulate_trade(
                     buy_price, stop_loss, target,
                     (closes, highs, lows, opens),
-                    i + 2, max_hold=10, trail_risk=risk, slippage_pct=0.003
+                    i + 3, max_hold=10, trail_risk=risk, slippage_pct=0.003
                 )
                 trades.append(outcome_pct)
 

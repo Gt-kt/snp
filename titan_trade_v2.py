@@ -308,15 +308,16 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         max_shares = DataValidator.max_position_size(vol_avg, c, MAX_POSITION_PCT_OF_VOLUME)
         shares = min(shares, max_shares) if max_shares > 0 else shares
 
-        # Statistical confidence — now includes conviction bonus
+        # Statistical confidence — pure backtest quality (no forward signals)
+        # Forward-looking signals (momentum/accumulation/RS) are only used
+        # in the composite score for ranking, NOT in the confidence grade.
+        # This prevents double-counting and keeps the grade honest.
         trades_list = res.get('trades_list', [])
-        conviction_bonus = _conviction_bonus(mom_score, accum_score, rs_pct)
         stat_conf = StatisticalConfidenceScorer.calculate_confidence(
             trades=res['trades'],
             win_rate=res['win_rate'],
             profit_factor=res['pf'],
             expectancy=res.get('expectancy', 0),
-            consistency_score=conviction_bonus,
         )
         t_stat = StatisticalConfidenceScorer.calculate_t_statistic(trades_list)
 
