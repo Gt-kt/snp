@@ -95,6 +95,9 @@ class StrategyValidator:
                 score += 20
             elif vol_ratio >= 1.0:
                 score += 10
+        elif up_vol > 0:
+            # All volume on up days, no down days — strong accumulation
+            score += 35
 
         # 3. Recent volume expansion (0-25 points): Are big players stepping in?
         vol_10d = volume.iloc[-10:].mean()
@@ -220,11 +223,9 @@ class StrategyValidator:
                          target_mult=2.5, stop_mult=2.0, return_trades=False):
         """Fast simulation of VCP Breakouts.
 
-        Enhanced with:
-        - Volatility contraction detection (last 5d range < prior 15d range)
-        - Volume surge confirmation (breakout day volume >= 1.3x average)
-        - Tighter base quality: handle depth must shrink vs prior base
-        - Close in upper 45% of breakout day range
+        No lookahead bias: day i = base detected, day i+1 = breakout
+        confirmed at close, day i+2 = entry at open. All confirmation
+        uses data available before the entry decision.
         """
         df = self.df.iloc[-days:].copy()
         if len(df) < 100:
@@ -247,7 +248,8 @@ class StrategyValidator:
 
         trades = []
 
-        for i in range(60, len(df)-1):
+        # Need i+2 for entry, so stop 2 before end
+        for i in range(60, len(df)-2):
             if not (closes[i] > sma50[i] > sma200[i]):
                 continue
             if i < 70:
@@ -271,7 +273,6 @@ class StrategyValidator:
             range_15 = (h_handle - l_handle) / max(curr_c, 1e-9)
             if range_5 > 0.10:
                 continue
-            # Contraction check: 5-day range should be smaller than 15-day
             if range_15 > 0 and range_5 > range_15 * 0.85:
                 continue
 
@@ -288,30 +289,40 @@ class StrategyValidator:
             atr_val = atr[i] if i < len(atr) and not np.isnan(atr[i]) else (curr_c * 0.02)
             pivot = h_handle + (atr_val * 0.05)
 
-            next_h = highs[i+1]
-            next_l = lows[i+1]
-            next_o = opens[i+1]
-            next_c = closes[i+1]
-            next_v = volumes[i+1]
-            next_vol_sma = vol_sma[i+1] if i+1 < len(vol_sma) else np.nan
-            next_vol_sma20 = vol_sma20[i+1] if i+1 < len(vol_sma20) else np.nan
+            # --- Day i+1: breakout confirmation day ---
+            # All checks below use end-of-day i+1 data. This is the
+            # CONFIRMATION day — we observe the breakout after close,
+            # then enter the next morning at day i+2 open.
+            bo_h = highs[i+1]
+            bo_l = lows[i+1]
+            bo_c = closes[i+1]
+            bo_v = volumes[i+1]
+            bo_vol_sma = vol_sma[i+1] if i+1 < len(vol_sma) else np.nan
+            bo_vol_sma20 = vol_sma20[i+1] if i+1 < len(vol_sma20) else np.nan
 
-            if next_h > pivot:
-                # Volume surge confirmation: breakout day needs strong volume
-                # Use 20-day SMA for a more responsive comparison
-                vol_ref = next_vol_sma20 if not np.isnan(next_vol_sma20) else next_vol_sma
-                if not np.isnan(vol_ref) and next_v < (vol_ref * max(vol_mult, 1.3)):
+            if bo_h > pivot:
+                # Volume surge confirmation
+                vol_ref = bo_vol_sma20 if not np.isnan(bo_vol_sma20) else bo_vol_sma
+                if not np.isnan(vol_ref) and bo_v < (vol_ref * max(vol_mult, 1.3)):
                     continue
-                # Close above pivot
-                if next_c < (pivot * 0.99):
+                # Close above pivot (confirmed at end of day)
+                if bo_c < (pivot * 0.99):
                     continue
-                day_range = max(next_h - next_l, 1e-9)
-                close_pos = (next_c - next_l) / day_range
+                day_range = max(bo_h - bo_l, 1e-9)
+                close_pos = (bo_c - bo_l) / day_range
                 # Close in upper 45% of day range (strong close)
                 if close_pos < 0.45:
                     continue
 
-                buy_price = max(pivot, next_o)
+                # --- Day i+2: ENTRY at open (no lookahead) ---
+                buy_price = opens[i+2]
+                # Reject if gap-up too large (>3% above pivot = chasing)
+                if buy_price > pivot * 1.03:
+                    continue
+                # Reject if gap-down below pivot (breakout failed overnight)
+                if buy_price < pivot * 0.97:
+                    continue
+
                 atr_val = atr[i] if i < len(atr) and not np.isnan(atr[i]) else (buy_price * 0.02)
                 stop_loss = buy_price - (atr_val * stop_mult)
                 target = buy_price + (atr_val * target_mult)
@@ -320,7 +331,7 @@ class StrategyValidator:
                 outcome_pct = self._simulate_trade(
                     buy_price, stop_loss, target,
                     (closes, highs, lows, opens),
-                    i + 2, max_hold=10, trail_risk=risk, slippage_pct=0.003
+                    i + 3, max_hold=10, trail_risk=risk, slippage_pct=0.003
                 )
                 trades.append(outcome_pct)
 
@@ -345,9 +356,12 @@ class StrategyValidator:
 
     def backtest_dip(self, days=750, stop_mult=2.0, target_mult=3.0, return_trades=False):
         """Fast simulation of Dip Buys (SMA50 support).
-        
-        Extended to 750 days for better sample size.
-        Target reduced slightly for more realistic exits.
+
+        Fixed issues from audit:
+        - Require price ABOVE SMA200 (not 3% below — that catches falling knives)
+        - Require SMA200 rising (filters out bear market rallies)
+        - Added trailing stop to lock in profits on winning dip trades
+        - Added bounce candle quality check (close in upper half of range)
         """
         df = self.df.iloc[-days:].copy()
         if len(df) < 100:
@@ -355,7 +369,7 @@ class StrategyValidator:
             if return_trades:
                 base['trades_list'] = []
             return base
-        
+
         sma50 = df['Close'].rolling(50).mean()
         sma200 = df['Close'].rolling(200).mean()
         rsi14 = calculate_rsi(df['Close'])
@@ -366,69 +380,86 @@ class StrategyValidator:
         volumes = df['Volume']
         vol_sma = df['Volume'].rolling(20).mean()
         atr = atr_series(df)
-        
-        trades = []
-        
-        for i in range(50, len(df)-5):
-            # Primary trend: above 200 SMA (or close to it for early recoveries)
-            if closes.iloc[i] > sma200.iloc[i] * 0.97:  # Allow 3% below 200 SMA
-                # 50 SMA should be rising
-                if sma50.iloc[i] <= sma50.iloc[i-10]:
-                    continue
-                
-                # Distance from 50 SMA - extended range to capture more setups
-                dist = (lows.iloc[i] - sma50.iloc[i]) / sma50.iloc[i]
-                
-                # Widened range from ±2% to -3%/+3%
-                if -0.03 < dist < 0.03:
-                    # RSI filter - relaxed from 45 to 40
-                    if rsi14.iloc[i] < 40:
-                        continue
-                    # Volume spike filter - relaxed from 1.3x to 1.5x
-                    if not np.isnan(vol_sma.iloc[i]) and volumes.iloc[i] > vol_sma.iloc[i] * 1.5:
-                        continue
-                    # Removed strict bullish close requirement - allow neutral days
-                    # Just ensure it's not a big red day
-                    daily_change = (closes.iloc[i] - opens.iloc[i]) / opens.iloc[i]
-                    if daily_change < -0.02:  # Skip if down more than 2%
-                        continue
-                    if i + 1 >= len(df):
-                        continue
-                    
-                    buy_price = opens.iloc[i + 1]
-                    if buy_price <= 0:
-                        continue
-                    # Relaxed gap limit from 5% to 6%
-                    if abs(buy_price - closes.iloc[i]) / closes.iloc[i] > 0.06:
-                        continue
-                    
-                    atr_val = atr.iloc[i]
-                    if np.isnan(atr_val) or atr_val <= 0:
-                        atr_val = buy_price * 0.02
-                    if (atr_val / buy_price) > 0.08:  # Relaxed from 7% to 8%
-                        continue
-                    
-                    stop = buy_price - (atr_val * stop_mult)
-                    target = buy_price + (atr_val * target_mult)
 
-                    outcome_pct = self._simulate_trade(
-                        buy_price, stop, target,
-                        (closes.values, highs.values, lows.values, opens.values),
-                        i + 2, max_hold=10, trail_risk=None, slippage_pct=0.001
-                    )
-                    trades.append(outcome_pct)
-                    
+        trades = []
+
+        for i in range(50, len(df)-5):
+            # FIX: Price must be ABOVE 200 SMA (no 3% below allowance)
+            if closes.iloc[i] < sma200.iloc[i]:
+                continue
+
+            # 50 SMA must be rising
+            if sma50.iloc[i] <= sma50.iloc[i-10]:
+                continue
+
+            # FIX: 200 SMA must be at least flat (not falling)
+            # This filters out bear market rallies where SMA50 bounces
+            # temporarily while the long-term trend is still down
+            if i >= 20 and sma200.iloc[i] < sma200.iloc[i-20]:
+                continue
+
+            # Distance from 50 SMA
+            dist = (lows.iloc[i] - sma50.iloc[i]) / sma50.iloc[i]
+
+            if -0.03 < dist < 0.03:
+                # RSI filter
+                if rsi14.iloc[i] < 40:
+                    continue
+                # Volume spike filter (reject panic selling)
+                if not np.isnan(vol_sma.iloc[i]) and volumes.iloc[i] > vol_sma.iloc[i] * 1.5:
+                    continue
+
+                # FIX: Bounce candle quality — close should be in upper
+                # half of the day range (shows buyers stepped in)
+                day_range = highs.iloc[i] - lows.iloc[i]
+                if day_range > 0:
+                    close_position = (closes.iloc[i] - lows.iloc[i]) / day_range
+                    if close_position < 0.40:
+                        continue
+                # Still reject big red days
+                daily_change = (closes.iloc[i] - opens.iloc[i]) / opens.iloc[i]
+                if daily_change < -0.015:
+                    continue
+                if i + 1 >= len(df):
+                    continue
+
+                buy_price = opens.iloc[i + 1]
+                if buy_price <= 0:
+                    continue
+                if abs(buy_price - closes.iloc[i]) / closes.iloc[i] > 0.05:
+                    continue
+
+                atr_val = atr.iloc[i]
+                if np.isnan(atr_val) or atr_val <= 0:
+                    atr_val = buy_price * 0.02
+                if (atr_val / buy_price) > 0.08:
+                    continue
+
+                stop = buy_price - (atr_val * stop_mult)
+                target = buy_price + (atr_val * target_mult)
+                # FIX: Add trailing stop to dip buys — the biggest
+                # profitability leak was letting winners run back to
+                # breakeven. Trail at 1R = breakeven, 2R = lock +1R.
+                risk = atr_val * stop_mult
+
+                outcome_pct = self._simulate_trade(
+                    buy_price, stop, target,
+                    (closes.values, highs.values, lows.values, opens.values),
+                    i + 2, max_hold=10, trail_risk=risk, slippage_pct=0.001
+                )
+                trades.append(outcome_pct)
+
         if not trades:
             base = {'win_rate': 0, 'pf': 0, 'trades': 0}
             if return_trades:
                 base['trades_list'] = []
             return base
-        
+
         wins = [t for t in trades if t > 0]
         losses = [t for t in trades if t <= 0]
         win_rate = len(wins) / len(trades) * 100
         pf = sum(wins)/abs(sum(losses)) if sum(losses) != 0 else (100.0 if sum(wins) > 0 else 0)
-        
+
         res = {'win_rate': win_rate, 'pf': pf, 'trades': len(trades)}
         if return_trades:
             res['trades_list'] = trades

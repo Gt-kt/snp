@@ -262,11 +262,11 @@ class StatisticalConfidenceScorer:
     """
     
     @staticmethod
-    def calculate_confidence(trades, win_rate, profit_factor, expectancy, 
+    def calculate_confidence(trades, win_rate, profit_factor, expectancy,
                            wf_pass_rate=None, oos_pf=None, consistency_score=None):
         score = 0
         factors = {}
-        
+
         # Sample Size (0-25 points) - Realistic for 500-day backtest
         if trades >= 50:
             sample_score = 25
@@ -284,7 +284,7 @@ class StatisticalConfidenceScorer:
             sample_score = 0
         score += sample_score
         factors["sample_size"] = {"value": trades, "score": sample_score, "max": 25}
-        
+
         # Win Rate (0-25 points) - Core profitability metric
         if win_rate >= 65:
             wr_score = 25
@@ -302,7 +302,7 @@ class StatisticalConfidenceScorer:
             wr_score = 0
         score += wr_score
         factors["win_rate"] = {"value": win_rate, "score": wr_score, "max": 25}
-        
+
         # Profit Factor (0-25 points) - Key for real profitability
         if profit_factor >= 2.0:
             pf_score = 25
@@ -320,7 +320,7 @@ class StatisticalConfidenceScorer:
             pf_score = 0
         score += pf_score
         factors["profit_factor"] = {"value": profit_factor, "score": pf_score, "max": 25}
-        
+
         # Expectancy (0-15 points) - Average profit per trade
         if expectancy >= 0.015:
             exp_score = 15
@@ -336,7 +336,7 @@ class StatisticalConfidenceScorer:
             exp_score = 0
         score += exp_score
         factors["expectancy"] = {"value": expectancy, "score": exp_score, "max": 15}
-        
+
         # Walk-Forward bonus (0-5 points)
         if wf_pass_rate is not None:
             if wf_pass_rate >= 0.60:
@@ -349,7 +349,7 @@ class StatisticalConfidenceScorer:
                 wf_score = 0
             score += wf_score
             factors["wf_pass_rate"] = {"value": wf_pass_rate, "score": wf_score, "max": 5}
-        
+
         # OOS bonus (0-5 points)
         if oos_pf is not None:
             if oos_pf >= 1.3:
@@ -362,7 +362,15 @@ class StatisticalConfidenceScorer:
                 oos_score = 0
             score += oos_score
             factors["oos_profit_factor"] = {"value": oos_pf, "score": oos_score, "max": 5}
-        
+
+        # Conviction bonus (0-10 points) — forward-looking signal quality
+        # Rewards stocks with strong momentum, institutional accumulation,
+        # and relative strength leadership beyond just backtest metrics.
+        if consistency_score is not None and consistency_score > 0:
+            conv_score = int(min(10, consistency_score))
+            score += conv_score
+            factors["conviction"] = {"value": consistency_score, "score": conv_score, "max": 10}
+
         # Grade - Calibrated for practical profitable trading
         if score >= 70:
             grade = "A"
@@ -374,7 +382,7 @@ class StatisticalConfidenceScorer:
             grade = "D"
         else:
             grade = "F"
-        
+
         return {
             "score": score,
             "grade": grade,
