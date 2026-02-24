@@ -406,6 +406,7 @@ def print_simple_verdict(setups, trust_manager, vix_level=None):
         rr_ratio = (s.target - s.trigger) / risk_per_share if risk_per_share > 0 else 0
         
         dist_pct = ((s.trigger - s.price) / s.price) * 100
+        alloc_pct = (shares * s.trigger) / trust_manager.account_size * 100
         
         print(f"  +-------------------------------------------------------------+")
         mom = getattr(s, 'momentum_score', 0)
@@ -413,7 +414,7 @@ def print_simple_verdict(setups, trust_manager, vix_level=None):
         rs = getattr(s, 'rs_percentile', 0)
         print(f"  |  #{i}  {s.ticker:<6}  {s.strategy:<12}  GRADE: {s.confidence_grade}                  |")
         print(f"  +-------------------------------------------------------------+")
-        print(f"  |  BUY:     {shares:>6} shares @ ${s.trigger:>8.2f}  (WAIT: {dist_pct:>4.1f}%)        |")
+        print(f"  |  ALLOC:   {alloc_pct:>5.1f}%    @ ${s.trigger:>8.2f}  (WAIT: {dist_pct:>4.1f}%)        |")
         print(f"  |  STOP:    ${s.stop:>8.2f}                                       |")
         print(f"  |  TARGET:  ${s.target:>8.2f}                                       |")
         print(f"  |  RISK: ${total_risk:>8.2f}  REWARD: ${potential_profit:>8.2f}  R:R {rr_ratio:.1f}:1     |")

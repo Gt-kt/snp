@@ -728,11 +728,11 @@ def main():
                     f"${s.trigger:.2f}", s.confidence_grade,
                     f"{s.win_rate:.0f}%", f"{s.profit_factor:.2f}",
                     f"{s.momentum_score:.0f}", f"{s.rs_percentile:.0f}",
-                    f"${s.stop:.2f}", f"${s.target:.2f}", s.qty
+                    f"${s.stop:.2f}", f"${s.target:.2f}", f"{((s.qty * s.price) / args.account_size * 100):.1f}%"
                 ])
             print(tabulate(table, headers=[
                 "Ticker", "Type", "Price", "Trigger", "Grade",
-                "Win%", "PF", "Mom", "RS%", "Stop", "Target", "Shares"
+                "Win%", "PF", "Mom", "RS%", "Stop", "Target", "Alloc%"
             ], tablefmt="grid"))
         else:
             print("\n  No valid setups found.")
