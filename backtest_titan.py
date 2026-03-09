@@ -1,7 +1,7 @@
 import os
 import argparse
 import pandas as pd
-from titan import StrategyValidator, Optimizer
+from titan import StrategyValidator
 import numpy as np
 
 CACHE_DIR = "cache_sp500_elite"
@@ -70,6 +70,12 @@ def _compute_trade_stats(trades):
         "sum_pnl": float(sum(trades)),
     }
 
+
+
+def _run_strategy_backtest(validator, is_breakout, return_trades=True):
+    if is_breakout:
+        return validator.backtest_breakout(return_trades=return_trades)
+    return validator.backtest_dip(return_trades=return_trades)
 
 def _regime_label(spy_df):
     if spy_df is None or spy_df.empty:
@@ -240,51 +246,75 @@ def _walk_forward_multi(df, cost_bps, slippage_bps, folds, test_ratio, min_trade
         train_val = StrategyValidator(train_df)
         test_val = StrategyValidator(test_df)
 
-        test_b = test_val.backtest_breakout(return_trades=True)
-        test_d = test_val.backtest_dip(return_trades=True)
+        train_b = _compute_trade_stats(_apply_costs(
+            train_val.backtest_breakout(return_trades=True).get("trades_list", []),
+            cost_bps,
+            slippage_bps,
+        ))
+        test_b_trades = _apply_costs(
+            test_val.backtest_breakout(return_trades=True).get("trades_list", []),
+            cost_bps,
+            slippage_bps,
+        )
+        test_b = _compute_trade_stats(test_b_trades)
 
-        test_b_trades = _apply_costs(test_b.get("trades_list", []), cost_bps, slippage_bps)
-        test_d_trades = _apply_costs(test_d.get("trades_list", []), cost_bps, slippage_bps)
+        train_d = _compute_trade_stats(_apply_costs(
+            train_val.backtest_dip(return_trades=True).get("trades_list", []),
+            cost_bps,
+            slippage_bps,
+        ))
+        test_d_trades = _apply_costs(
+            test_val.backtest_dip(return_trades=True).get("trades_list", []),
+            cost_bps,
+            slippage_bps,
+        )
+        test_d = _compute_trade_stats(test_d_trades)
 
-        b_stats = _compute_trade_stats(test_b_trades)
-        d_stats = _compute_trade_stats(test_d_trades)
+        b_fold_stats.append({"train": train_b, "test": test_b})
+        d_fold_stats.append({"train": train_d, "test": test_d})
 
-        b_fold_stats.append(b_stats)
-        d_fold_stats.append(d_stats)
-        b_all_trades.extend(test_b_trades)
-        d_all_trades.extend(test_d_trades)
+        if train_b["trades"] >= min_trades and train_b["pf"] >= WF_MIN_PF and train_b["expectancy"] > WF_MIN_EXPECTANCY:
+            b_all_trades.extend(test_b_trades)
+        if train_d["trades"] >= min_trades and train_d["pf"] >= WF_MIN_PF and train_d["expectancy"] > WF_MIN_EXPECTANCY:
+            d_all_trades.extend(test_d_trades)
 
     if not b_fold_stats and not d_fold_stats:
         return {}
 
-    def fold_mean(stats_list, key):
-        vals = [s[key] for s in stats_list if s["trades"] > 0]
+    def fold_mean(folds_list, key):
+        vals = [fold["test"][key] for fold in folds_list if fold["train"]["trades"] >= min_trades]
         return float(np.mean(vals)) if vals else 0.0
 
-    def pass_rate(stats_list):
-        eligible = [s for s in stats_list if s["trades"] >= min_trades]
-        if not eligible:
-            return 0.0
-        passed = [
-            s
-            for s in eligible
-            if s["pf"] >= WF_MIN_PF and s["expectancy"] > WF_MIN_EXPECTANCY
+    def pass_rate(folds_list):
+        eligible = [
+            fold for fold in folds_list
+            if fold["train"]["trades"] >= min_trades and fold["train"]["pf"] >= WF_MIN_PF and fold["train"]["expectancy"] > WF_MIN_EXPECTANCY
         ]
-        return float(len(passed) / len(eligible))
+        if not eligible:
+            return 0.0, 0
+        passed = [
+            fold for fold in eligible
+            if fold["test"]["trades"] >= min_trades and fold["test"]["pf"] >= WF_MIN_PF and fold["test"]["expectancy"] > WF_MIN_EXPECTANCY
+        ]
+        return float(len(passed) / len(eligible)), len(eligible)
 
     b_agg = _compute_trade_stats(b_all_trades)
     d_agg = _compute_trade_stats(d_all_trades)
+    b_pass_rate, b_eligible = pass_rate(b_fold_stats)
+    d_pass_rate, d_eligible = pass_rate(d_fold_stats)
 
     return {
         "Breakout_WF_Folds": len(b_fold_stats),
-        "Breakout_WF_PassRate": pass_rate(b_fold_stats),
+        "Breakout_WF_Eligible_Folds": b_eligible,
+        "Breakout_WF_PassRate": b_pass_rate,
         "Breakout_WF_Test_Trades_total": b_agg["trades"],
         "Breakout_WF_Test_PF_trade_weighted": b_agg["pf"],
         "Breakout_WF_Test_Expectancy_trade_weighted": b_agg["expectancy"],
         "Breakout_WF_Test_PF_mean": fold_mean(b_fold_stats, "pf"),
         "Breakout_WF_Test_Expectancy_mean": fold_mean(b_fold_stats, "expectancy"),
         "Dip_WF_Folds": len(d_fold_stats),
-        "Dip_WF_PassRate": pass_rate(d_fold_stats),
+        "Dip_WF_Eligible_Folds": d_eligible,
+        "Dip_WF_PassRate": d_pass_rate,
         "Dip_WF_Test_Trades_total": d_agg["trades"],
         "Dip_WF_Test_PF_trade_weighted": d_agg["pf"],
         "Dip_WF_Test_Expectancy_trade_weighted": d_agg["expectancy"],
@@ -298,7 +328,6 @@ def _walk_forward_multi(df, cost_bps, slippage_bps, folds, test_ratio, min_trade
         "Dip_WF_Test_PF": d_agg["pf"],
         "Dip_WF_Test_Expectancy": d_agg["expectancy"],
     }
-
 
 def run_backtest(
     data,
@@ -366,21 +395,38 @@ def run_backtest(
             train_df, test_df = _split_oos(df, oos_train_ratio, oos_min_test_bars)
             if train_df is not None and test_df is not None:
                 train_val = StrategyValidator(train_df)
-                opt = Optimizer(train_val)
-                _, params = opt.tune_breakout()
                 test_val = StrategyValidator(test_df)
-                b_test = test_val.backtest_breakout(
-                    depth=params.get("depth", 0.20),
-                    target_mult=params.get("target_mult", 3.5),
-                    return_trades=True,
-                )
-                d_test = test_val.backtest_dip(return_trades=True)
-
-                b_trades = _apply_costs(b_test.get("trades_list", []), cost_bps, slippage_bps)
-                d_trades = _apply_costs(d_test.get("trades_list", []), cost_bps, slippage_bps)
-                b_stats = _compute_trade_stats(b_trades)
-                d_stats = _compute_trade_stats(d_trades)
+                b_train_stats = _compute_trade_stats(_apply_costs(
+                    train_val.backtest_breakout(return_trades=True).get("trades_list", []),
+                    cost_bps,
+                    slippage_bps,
+                ))
+                d_train_stats = _compute_trade_stats(_apply_costs(
+                    train_val.backtest_dip(return_trades=True).get("trades_list", []),
+                    cost_bps,
+                    slippage_bps,
+                ))
+                b_stats = _compute_trade_stats(_apply_costs(
+                    test_val.backtest_breakout(return_trades=True).get("trades_list", []),
+                    cost_bps,
+                    slippage_bps,
+                ))
+                d_stats = _compute_trade_stats(_apply_costs(
+                    test_val.backtest_dip(return_trades=True).get("trades_list", []),
+                    cost_bps,
+                    slippage_bps,
+                ))
                 oos_stats = {
+                    "Breakout_OOS_TrainQualified": int(
+                        b_train_stats["trades"] >= min_trades and
+                        b_train_stats["pf"] >= WF_MIN_PF and
+                        b_train_stats["expectancy"] > WF_MIN_EXPECTANCY
+                    ),
+                    "Dip_OOS_TrainQualified": int(
+                        d_train_stats["trades"] >= min_trades and
+                        d_train_stats["pf"] >= WF_MIN_PF and
+                        d_train_stats["expectancy"] > WF_MIN_EXPECTANCY
+                    ),
                     "Breakout_OOS_WR": b_stats["win_rate"],
                     "Breakout_OOS_PF": b_stats["pf"],
                     "Breakout_OOS_Trades": b_stats["trades"],
@@ -447,6 +493,7 @@ def summarize(df):
         "Breakout_Tickers_Eligible": int(breakout_df.shape[0]),
         "Breakout_WR_mean": breakout_df["Breakout_WR"].mean(),
         "Breakout_PF_mean": breakout_df["Breakout_PF"].mean(),
+        "Breakout_PF_median": breakout_df["Breakout_PF"].median(),
         "Breakout_Trades_mean": breakout_df["Breakout_Trades"].mean(),
         "Breakout_Trades_total": int(breakout_trades_all),
         "Breakout_PF_trade_weighted": float(
@@ -463,6 +510,7 @@ def summarize(df):
         "Dip_Tickers_Eligible": int(dip_df.shape[0]),
         "Dip_WR_mean": dip_df["Dip_WR"].mean(),
         "Dip_PF_mean": dip_df["Dip_PF"].mean(),
+        "Dip_PF_median": dip_df["Dip_PF"].median(),
         "Dip_Trades_mean": dip_df["Dip_Trades"].mean(),
         "Dip_Trades_total": int(dip_trades_all),
         "Dip_PF_trade_weighted": float(
@@ -533,6 +581,10 @@ def summarize(df):
     if "Breakout_OOS_Trades" in df.columns:
         oos_b = df[df["Breakout_OOS_Trades"] >= WF_MIN_TRADES]
         oos_d = df[df["Dip_OOS_Trades"] >= WF_MIN_TRADES]
+        if "Breakout_OOS_TrainQualified" in df.columns:
+            oos_b = oos_b[oos_b["Breakout_OOS_TrainQualified"] == 1]
+        if "Dip_OOS_TrainQualified" in df.columns:
+            oos_d = oos_d[oos_d["Dip_OOS_TrainQualified"] == 1]
         if not oos_b.empty:
             summary["Breakout_OOS_WR_mean"] = oos_b["Breakout_OOS_WR"].mean()
             summary["Breakout_OOS_PF_mean"] = oos_b["Breakout_OOS_PF"].mean()
@@ -594,3 +646,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+

@@ -7,6 +7,7 @@ Market hours utilities and regime detection.
 import os
 import time
 import json
+import calendar
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -28,6 +29,80 @@ except ImportError:
     HAS_PYTZ = False
 
 
+
+def _nth_weekday_of_month(year, month, weekday, occurrence):
+    first_day = date(year, month, 1)
+    offset = (weekday - first_day.weekday()) % 7
+    return first_day + timedelta(days=offset + (occurrence - 1) * 7)
+
+
+def _last_weekday_of_month(year, month, weekday):
+    last_day = date(year, month, calendar.monthrange(year, month)[1])
+    while last_day.weekday() != weekday:
+        last_day -= timedelta(days=1)
+    return last_day
+
+
+def _observed_holiday(day):
+    if day.weekday() == 5:
+        return day - timedelta(days=1)
+    if day.weekday() == 6:
+        return day + timedelta(days=1)
+    return day
+
+
+def _easter_sunday(year):
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def _nyse_holidays(year):
+    return {
+        _observed_holiday(date(year, 1, 1)),
+        _nth_weekday_of_month(year, 1, 0, 3),
+        _nth_weekday_of_month(year, 2, 0, 3),
+        _easter_sunday(year) - timedelta(days=2),
+        _last_weekday_of_month(year, 5, 0),
+        _observed_holiday(date(year, 6, 19)),
+        _observed_holiday(date(year, 7, 4)),
+        _nth_weekday_of_month(year, 9, 0, 1),
+        _nth_weekday_of_month(year, 11, 3, 4),
+        _observed_holiday(date(year, 12, 25)),
+    }
+
+
+def _nyse_early_closes(year):
+    holidays = _nyse_holidays(year)
+    early_closes = set()
+
+    black_friday = _nth_weekday_of_month(year, 11, 3, 4) + timedelta(days=1)
+    if black_friday.weekday() < 5 and black_friday not in holidays:
+        early_closes.add(black_friday)
+
+    july_3 = date(year, 7, 3)
+    if july_3.weekday() < 5 and july_3 not in holidays:
+        early_closes.add(july_3)
+
+    christmas_eve = date(year, 12, 24)
+    if christmas_eve.weekday() < 5 and christmas_eve not in holidays:
+        early_closes.add(christmas_eve)
+
+    return early_closes
+
+
 class MarketHours:
     """Utilities for checking market hours and smart refresh."""
     
@@ -38,48 +113,86 @@ class MarketHours:
             eastern = pytz.timezone(MARKET_TIMEZONE)
             return datetime.now(eastern)
         return datetime.now()
+
+    @staticmethod
+    def is_trading_day(day):
+        """Return True when NYSE is expected to be open for the session."""
+        return day.weekday() < 5 and day not in _nyse_holidays(day.year)
+
+    @staticmethod
+    def get_session_close(day):
+        """Return the regular or early-close timestamp for a trading day."""
+        close_hour = MARKET_CLOSE_HOUR
+        close_minute = MARKET_CLOSE_MINUTE
+        if day in _nyse_early_closes(day.year):
+            close_hour = 13
+            close_minute = 0
+        return close_hour, close_minute
+
+    @staticmethod
+    def get_session_bounds(now=None):
+        """Return today's market-open and market-close timestamps, if tradable."""
+        now = now or MarketHours.get_eastern_time()
+        trading_day = now.date()
+        if not MarketHours.is_trading_day(trading_day):
+            return None, None
+        market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+        close_hour, close_minute = MarketHours.get_session_close(trading_day)
+        market_close = now.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
+        return market_open, market_close
     
     @staticmethod
     def is_market_open():
         """Check if US stock market is currently open."""
         now = MarketHours.get_eastern_time()
-        if now.weekday() >= 5:
+        market_open, market_close = MarketHours.get_session_bounds(now)
+        if market_open is None or market_close is None:
             return False
-        market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
-        market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
         return market_open <= now <= market_close
     
     @staticmethod
     def is_pre_market():
         """Check if in pre-market hours (4:00 AM - 9:30 AM ET)."""
         now = MarketHours.get_eastern_time()
-        if now.weekday() >= 5:
+        market_open, _ = MarketHours.get_session_bounds(now)
+        if market_open is None:
             return False
         pre_market_start = now.replace(hour=4, minute=0, second=0, microsecond=0)
-        market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
         return pre_market_start <= now < market_open
     
     @staticmethod
     def is_after_hours():
-        """Check if in after-hours (4:00 PM - 8:00 PM ET)."""
+        """Check if in after-hours (session close - 8:00 PM ET)."""
         now = MarketHours.get_eastern_time()
-        if now.weekday() >= 5:
+        _, market_close = MarketHours.get_session_bounds(now)
+        if market_close is None:
             return False
-        market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
         after_hours_end = now.replace(hour=20, minute=0, second=0, microsecond=0)
         return market_close < now <= after_hours_end
     
     @staticmethod
     def should_auto_refresh(cache_file, ttl_hours=0.5):
-        """Determine if data should be auto-refreshed."""
+        """Determine if data should be auto-refreshed based on market hours and cache age."""
         if not AUTO_REFRESH_DURING_MARKET_HOURS:
             return False
         if not os.path.exists(cache_file):
             return True
+            
+        mtime = os.path.getmtime(cache_file)
+        
         if MarketHours.is_market_open():
-            cache_age_seconds = time.time() - os.path.getmtime(cache_file)
+            cache_time_est = datetime.fromtimestamp(mtime, tz=MarketHours.get_eastern_time().tzinfo)
+            market_open_today, _ = MarketHours.get_session_bounds(cache_time_est)
+            
+            now_est = MarketHours.get_eastern_time()
+            if market_open_today and cache_time_est < market_open_today <= now_est:
+                return True
+                
+            cache_age_seconds = time.time() - mtime
             cache_age_hours = cache_age_seconds / 3600
-            return cache_age_hours >= ttl_hours
+            if cache_age_hours >= ttl_hours:
+                return True
+                
         return False
     
     @staticmethod
@@ -97,12 +210,17 @@ class MarketHours:
     def time_until_market_open():
         """Get timedelta until next market open."""
         now = MarketHours.get_eastern_time()
-        next_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
-        if now >= next_open:
-            next_open += timedelta(days=1)
-        while next_open.weekday() >= 5:
-            next_open += timedelta(days=1)
-        return next_open - now
+        candidate = now
+        
+        for _ in range(10):
+            trading_day = candidate.date()
+            if MarketHours.is_trading_day(trading_day):
+                market_open = candidate.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+                if trading_day != now.date() or now < market_open:
+                    return market_open - now
+            candidate = (candidate + timedelta(days=1)).replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+        
+        return timedelta(days=1)
 
 
 class MarketRegime:
@@ -132,6 +250,8 @@ class MarketRegime:
             if sma50 > sma200: 
                 status = "BULL"
                 score = 1.0
+                if c.rolling(20).mean().iloc[-1] > sma50 and curr > sma50:
+                    status = "STRONG_BULL"
             else: 
                 status = "RECOVERY"
                 score = 0.7
@@ -139,6 +259,8 @@ class MarketRegime:
             if curr < sma50:
                 status = "BEAR"
                 score = 0.0
+                if sma50 < sma200 and c.rolling(20).mean().iloc[-1] < sma50 and curr < sma50:
+                    status = "STRONG_BEAR"
             else:
                 status = "Correction"
                 score = 0.2
@@ -215,6 +337,35 @@ class SectorMapper:
         return 'Unknown'
 
 
+class SectorAnalyzer:
+    """Analyze and rank sector performance."""
+    
+    def __init__(self, data_dict):
+        """Initialize with a dictionary of ticker -> DataFrame containing historical data."""
+        self.data_dict = data_dict
+        
+    def get_top_sectors(self, top_n=3, lookback_days=20):
+        """Rank sectors by relative momentum over the lookback period."""
+        from .config import SECTOR_ETFS
+        
+        sector_performance = []
+        for sector_name, etf_ticker in SECTOR_ETFS.items():
+            if etf_ticker in self.data_dict:
+                df = self.data_dict[etf_ticker]
+                if isinstance(df, pd.DataFrame) and len(df) >= lookback_days:
+                    # Calculate simple rate of return over the lookback
+                    current_price = df['Close'].iloc[-1]
+                    past_price = df['Close'].iloc[-lookback_days]
+                    roc = ((current_price - past_price) / past_price) * 100
+                    sector_performance.append((sector_name, roc))
+        
+        # Sort descending by return
+        sector_performance.sort(key=lambda x: x[1], reverse=True)
+        
+        # Return only the top N sectors
+        return [s[0] for s in sector_performance[:top_n]]
+
+
 class EarningsCalendar:
     """Check earnings dates for stocks."""
     
@@ -265,3 +416,4 @@ class EarningsCalendar:
             elif -post_days <= days_until < 0:
                 return True, f"Earnings {abs(days_until)} days ago"
         return False, f"Earnings in {days_until} days" if days_until else "OK"
+

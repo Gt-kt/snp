@@ -14,7 +14,8 @@ from .config import (
     MAX_DRAWDOWN_PCT, PORTFOLIO_HEAT_MAX, RISK_LOG_FILE,
     MAX_RISK_PCT_PER_TRADE, MIN_AVG_DOLLAR_VOLUME, MIN_AVG_VOLUME,
     MAX_POSITION_PCT_OF_VOLUME, BASE_SLIPPAGE_BREAKOUT_BPS,
-    BASE_SLIPPAGE_DIP_BPS, VOLUME_IMPACT_FACTOR, MAX_DATA_AGE_MINUTES
+    BASE_SLIPPAGE_DIP_BPS, VOLUME_IMPACT_FACTOR, MAX_DATA_AGE_MINUTES,
+    USE_VOLATILITY_PARITY, TARGET_VOLATILITY_PCT
 )
 
 
@@ -45,8 +46,11 @@ class PortfolioRiskManager:
         self.state = {
             "peak_equity": self.account_size,
             "current_equity": self.account_size,
+            "day_start_equity": self.account_size,
+            "week_start_equity": self.account_size,
             "daily_pnl": 0.0,
             "weekly_pnl": 0.0,
+            "last_equity_date": None,
             "last_trade_date": None,
             "last_week_start": None,
             "open_positions": {},
@@ -67,21 +71,41 @@ class PortfolioRiskManager:
         except Exception:
             pass
     
-    def _reset_daily_if_needed(self):
+    def _reset_daily_if_needed(self, reference_equity=None):
         today = date.today().isoformat()
-        if self.state["last_trade_date"] != today:
+        current_equity = float(reference_equity or self.state.get("current_equity", self.account_size))
+        if self.state.get("last_equity_date") != today:
+            self.state["day_start_equity"] = current_equity
             self.state["daily_pnl"] = 0.0
+            self.state["last_equity_date"] = today
             self.state["last_trade_date"] = today
     
-    def _reset_weekly_if_needed(self):
+    def _reset_weekly_if_needed(self, reference_equity=None):
         today = date.today()
         week_start = (today - timedelta(days=today.weekday())).isoformat()
-        if self.state["last_week_start"] != week_start:
+        current_equity = float(reference_equity or self.state.get("current_equity", self.account_size))
+        if self.state.get("last_week_start") != week_start:
+            self.state["week_start_equity"] = current_equity
             self.state["weekly_pnl"] = 0.0
             self.state["last_week_start"] = week_start
     
-    def update_equity(self, new_equity):
+    def update_equity(self, new_equity, day_start_equity=None):
+        new_equity = float(new_equity)
+        today = date.today().isoformat()
+        if day_start_equity is not None:
+            self.state["day_start_equity"] = float(day_start_equity)
+            self.state["last_equity_date"] = today
+            self.state["last_trade_date"] = today
+        else:
+            self._reset_daily_if_needed(reference_equity=new_equity)
+        self._reset_weekly_if_needed(reference_equity=new_equity)
         self.state["current_equity"] = new_equity
+        self.state["daily_pnl"] = new_equity - float(
+            self.state.get("day_start_equity", new_equity)
+        )
+        self.state["weekly_pnl"] = new_equity - float(
+            self.state.get("week_start_equity", new_equity)
+        )
         if new_equity > self.state["peak_equity"]:
             self.state["peak_equity"] = new_equity
         self._save_state()
@@ -151,17 +175,59 @@ class PortfolioRiskManager:
         
         return True, "OK"
     
-    def get_position_size_scalar(self):
+    def get_position_size_scalar(self, market_regime="NEUTRAL"):
         scalar = 1.0
+        
+        # Drawdown Penalty
         dd = self.get_current_drawdown_pct()
         if dd > self.max_drawdown_pct * 0.5:
             dd_scalar = 1.0 - (dd - self.max_drawdown_pct * 0.5) / (self.max_drawdown_pct * 0.5)
             scalar = min(scalar, max(0.25, dd_scalar))
+            
+        # Daily Loss Penalty
         daily_loss = self.get_daily_loss_pct()
         if daily_loss > self.max_daily_loss_pct * 0.5:
             daily_scalar = 1.0 - (daily_loss - self.max_daily_loss_pct * 0.5) / (self.max_daily_loss_pct * 0.5)
             scalar = min(scalar, max(0.25, daily_scalar))
+            
+        # Regime Penalty
+        if market_regime == "STRONG_BEAR":
+            scalar *= 0.25
+        elif market_regime == "BEAR":
+            scalar *= 0.5
+        elif market_regime == "Correction":
+            scalar *= 0.75
+        elif market_regime == "STRONG_BULL":
+            scalar *= 1.25 # Allow slight leverage/expansion in pure bull markets
+            
         return scalar
+        
+    def calculate_position_shares(self, price, stop_loss, atr, market_regime="NEUTRAL", max_volume_shares=None):
+        """
+        Calculate the number of shares to buy using Volatility Parity if enabled,
+        otherwise fall back to standard risk-per-trade fraction.
+        """
+        scalar = self.get_position_size_scalar(market_regime)
+        
+        if USE_VOLATILITY_PARITY and atr > 0:
+            # Volatility Parity: 
+            # We want 1 ATR move to equal TARGET_VOLATILITY_PCT (0.5%) of the account
+            target_dollar_volatility = self.account_size * (TARGET_VOLATILITY_PCT / 100.0) * scalar
+            shares = target_dollar_volatility / atr
+        else:
+            # Traditional Fixed Fractional Risk
+            risk_per_share = price - stop_loss
+            if risk_per_share <= 0:
+                return 0
+            
+            target_risk_dollars = self.account_size * (MAX_RISK_PCT_PER_TRADE / 100.0) * scalar
+            shares = target_risk_dollars / risk_per_share
+            
+        # Apply liquidity limits
+        if max_volume_shares is not None:
+            shares = min(shares, max_volume_shares)
+            
+        return int(shares)
     
     def get_risk_status(self, open_positions=None):
         dd = self.get_current_drawdown_pct()
@@ -400,3 +466,7 @@ class StatisticalConfidenceScorer:
         if std_ret == 0:
             return 0.0
         return float(mean_ret / (std_ret / np.sqrt(n)))
+
+
+
+

@@ -23,6 +23,24 @@ DASHBOARD_FILE = "performance_dashboard.png"
 AUTO_MODE_CONFIG_FILE = "titan_auto_config.json"
 
 # =============================================================================
+# SECTOR ETFS for Top-Down Relative Strength
+# =============================================================================
+SECTOR_ETFS = {
+    "Technology": "XLK",
+    "Financial Services": "XLF",
+    "Healthcare": "XLV",
+    "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP",
+    "Energy": "XLE",
+    "Industrials": "XLI",
+    "Basic Materials": "XLB",
+    "Utilities": "XLU",
+    "Real Estate": "XLRE",
+    "Communication Services": "XLC"
+}
+TOP_SECTORS_TO_TRADE = 3 # Only trade stocks from the top 3 performing sectors
+
+# =============================================================================
 # DATA FRESHNESS
 # =============================================================================
 DEFAULT_SP500_TTL_DAYS = 7
@@ -58,15 +76,21 @@ DEFAULT_COMMISSION_BPS = 5.0
 # =============================================================================
 # POSITION SIZING & RISK MANAGEMENT
 # =============================================================================
-RISK_PER_TRADE = 500.0
+RISK_PER_TRADE = 500.0  # Used as the baseline for Fixed Fractional 
 ACCOUNT_SIZE = 100000.0
-MAX_RISK_PCT_PER_TRADE = 0.5
+MAX_RISK_PCT_PER_TRADE = 0.5  # 0.5% max account risk per trade
 MAX_POSITIONS = 6
 MAX_SECTOR_EXPOSURE = 3
 MAX_DAILY_LOSS_PCT = 2.0
 MAX_WEEKLY_LOSS_PCT = 5.0
 MAX_DRAWDOWN_PCT = 15.0
 PORTFOLIO_HEAT_MAX = 6.0
+
+# =============================================================================
+# VOLATILITY PARITY CONFIG
+# =============================================================================
+USE_VOLATILITY_PARITY = True
+TARGET_VOLATILITY_PCT = 0.5 # We want 0.5% portfolio impact per average ATR move
 
 # =============================================================================
 # VIX THRESHOLDS
@@ -145,11 +169,13 @@ DEFAULT_REQUIRE_CONFIRMED_SETUP = True
 # REGIME FACTORS
 # =============================================================================
 DEFAULT_REGIME_FACTORS = {
+    "STRONG_BULL": 0.8,
     "BULL": 1.0,
     "RECOVERY": 1.1,
     "NEUTRAL": 1.2,
     "Correction": 1.4,
     "BEAR": 2.0,
+    "STRONG_BEAR": 3.0,
 }
 
 # =============================================================================

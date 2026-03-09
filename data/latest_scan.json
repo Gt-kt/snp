@@ -1,0 +1,13 @@
+{
+    "timestamp": "2026-03-09T20:50:32.392583",
+    "market_status": "Correction+FEAR",
+    "top_sectors": [
+        "Utilities",
+        "Energy",
+        "Real Estate"
+    ],
+    "vix_level": 32.17,
+    "passed_count": 0,
+    "total_scanned": 0,
+    "setups": []
+}

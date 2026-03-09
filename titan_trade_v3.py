@@ -391,6 +391,21 @@ def get_adjusted_backtest_stats(backtest_res, settings):
     return compute_trade_stats(apply_validation_costs(backtest_res.get('trades_list', []), settings))
 
 
+
+def run_strategy_backtest(validator, is_breakout, return_trades=True, min_entry_idx=None):
+    """Run the selected strategy with a consistent interface."""
+    if is_breakout:
+        return validator.backtest_breakout(
+            return_trades=return_trades,
+            min_entry_idx=min_entry_idx,
+        )
+    return validator.backtest_dip(
+        return_trades=return_trades,
+        min_entry_idx=min_entry_idx,
+    )
+
+
+
 def get_regime_label(spy_df):
     """Classify a historical SPY window into a simple regime label."""
     if spy_df is None or spy_df.empty or 'Close' not in spy_df:
@@ -408,6 +423,7 @@ def get_regime_label(spy_df):
     return 'NEUTRAL'
 
 
+
 def get_regime_segments(df, segments=3):
     """Split the recent history into coarse regime buckets."""
     n = len(df)
@@ -417,6 +433,7 @@ def get_regime_segments(df, segments=3):
     total_len = seg_len * segments
     start = max(n - total_len, 0)
     return [(start + i * seg_len, start + (i + 1) * seg_len) for i in range(segments)]
+
 
 
 def evaluate_regime_stability(df, spy_df, settings, is_breakout):
@@ -436,7 +453,7 @@ def evaluate_regime_stability(df, spy_df, settings, is_breakout):
         seg_spy = spy_df.iloc[start:end] if spy_df is not None else None
         labels.append(get_regime_label(seg_spy))
         validator = StrategyValidator(seg_df)
-        seg_res = validator.backtest_breakout(return_trades=True) if is_breakout else validator.backtest_dip(return_trades=True)
+        seg_res = run_strategy_backtest(validator, is_breakout, return_trades=True)
         seg_stats = get_adjusted_backtest_stats(seg_res, settings)
         if seg_stats['trades'] >= min_trades and seg_stats['pf'] >= min_pf and seg_stats['expectancy'] > min_exp:
             passed += 1
@@ -446,6 +463,43 @@ def evaluate_regime_stability(df, spy_df, settings, is_breakout):
         'count': len(segments),
         'labels': ','.join(labels),
     }
+
+
+
+def evaluate_train_test_window(train_df, test_df, settings, is_breakout, min_trades, min_pf, min_exp):
+    """Validate a fold only when the training window qualified first."""
+    if len(train_df) < 120 or len(test_df) < 120:
+        return None
+
+    train_validator = StrategyValidator(train_df)
+    test_validator = StrategyValidator(test_df)
+    train_stats = get_adjusted_backtest_stats(
+        run_strategy_backtest(train_validator, is_breakout, return_trades=True),
+        settings,
+    )
+    test_stats = get_adjusted_backtest_stats(
+        run_strategy_backtest(test_validator, is_breakout, return_trades=True),
+        settings,
+    )
+
+    train_qualified = (
+        train_stats['trades'] >= min_trades and
+        train_stats['pf'] >= min_pf and
+        train_stats['expectancy'] > min_exp
+    )
+    test_passed = (
+        test_stats['trades'] >= min_trades and
+        test_stats['pf'] >= min_pf and
+        test_stats['expectancy'] > min_exp
+    )
+
+    return {
+        'train_stats': train_stats,
+        'test_stats': test_stats,
+        'train_qualified': train_qualified,
+        'passed': train_qualified and test_passed,
+    }
+
 
 
 def evaluate_walk_forward_robustness(df, settings, is_breakout):
@@ -459,40 +513,38 @@ def evaluate_walk_forward_robustness(df, settings, is_breakout):
     n = len(df)
     test_len = max(120, int(n * test_ratio))
     if n < test_len * folds + 120:
-        return {'folds': 0, 'pass_rate': 0.0, 'trades': 0, 'pf': 0.0, 'expectancy': 0.0}
+        return {'folds': 0, 'eligible_folds': 0, 'pass_rate': 0.0, 'trades': 0, 'pf': 0.0, 'expectancy': 0.0}
 
-    fold_stats = []
-    all_trades = []
+    fold_results = []
+    qualified_test_trades = []
     for i in range(folds):
         test_start = n - (folds - i) * test_len
         test_end = min(test_start + test_len, n)
         train_df = df.iloc[:test_start]
         test_df = df.iloc[test_start:test_end]
-        if len(train_df) < 120 or len(test_df) < 120:
+        fold_result = evaluate_train_test_window(
+            train_df, test_df, settings, is_breakout, min_trades, min_pf, min_exp
+        )
+        if not fold_result:
             continue
-        validator = StrategyValidator(test_df)
-        test_res = validator.backtest_breakout(return_trades=True) if is_breakout else validator.backtest_dip(return_trades=True)
-        stats = get_adjusted_backtest_stats(test_res, settings)
-        fold_stats.append(stats)
-        all_trades.extend(stats['trades_list'])
+        fold_results.append(fold_result)
+        if fold_result['train_qualified']:
+            qualified_test_trades.extend(fold_result['test_stats']['trades_list'])
 
-    if not fold_stats:
-        return {'folds': 0, 'pass_rate': 0.0, 'trades': 0, 'pf': 0.0, 'expectancy': 0.0}
+    if not fold_results:
+        return {'folds': 0, 'eligible_folds': 0, 'pass_rate': 0.0, 'trades': 0, 'pf': 0.0, 'expectancy': 0.0}
 
-    eligible = [stats for stats in fold_stats if stats['trades'] >= min_trades]
-    passed = [
-        stats for stats in eligible
-        if stats['pf'] >= min_pf and stats['expectancy'] > min_exp
-    ]
-    aggregate = compute_trade_stats(all_trades)
+    eligible = [result for result in fold_results if result['train_qualified']]
+    passed = [result for result in eligible if result['passed']]
+    aggregate = compute_trade_stats(qualified_test_trades)
     return {
-        'folds': len(fold_stats),
+        'folds': len(fold_results),
+        'eligible_folds': len(eligible),
         'pass_rate': float(len(passed) / len(eligible)) if eligible else 0.0,
         'trades': int(aggregate['trades']),
         'pf': float(aggregate['pf']),
         'expectancy': float(aggregate['expectancy']),
     }
-
 
 def calculate_robustness_score(net_stats, oos_stats, wf_stats, regime_stats, is_breakout):
     """Blend net, OOS, walk-forward, and regime evidence into a 0-100 score."""
@@ -1297,13 +1349,13 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
 
         # Backtest
         if is_breakout:
-            res = validator.backtest_breakout(return_trades=True)
+            res = run_strategy_backtest(validator, True, return_trades=True)
             strategy_name = "BREAKOUT"
             min_wr = settings.get('min_winrate_breakout', DEFAULT_MIN_WIN_RATE_BREAKOUT)
             min_pf = settings.get('min_pf_breakout', DEFAULT_MIN_PF_BREAKOUT)
             min_trades = settings.get('min_trades_breakout', DEFAULT_MIN_TRADES_BREAKOUT)
         else:
-            res = validator.backtest_dip(return_trades=True)
+            res = run_strategy_backtest(validator, False, return_trades=True)
             strategy_name = "DIP BUY"
             min_wr = settings.get('min_winrate_dip', DEFAULT_MIN_WIN_RATE_DIP)
             min_pf = settings.get('min_pf_dip', DEFAULT_MIN_PF_DIP)
@@ -2053,8 +2105,12 @@ def main():
 
     if executor and executor.is_connected():
         live_equity = executor.get_account_equity()
+        prior_close_equity = executor.get_account_last_equity()
         if live_equity > 0:
-            risk_manager.update_equity(live_equity)
+            risk_manager.update_equity(
+                live_equity,
+                day_start_equity=(prior_close_equity if prior_close_equity > 0 else None),
+            )
 
     # Check risk status only when trust/execution state matters
     if args.trust_mode or args.trust_paper or execution_enabled:
@@ -2271,3 +2327,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+

@@ -59,6 +59,7 @@ from titan import (
     # Utils
     atr_series, expectancy, parse_tickers, resolve_output_paths, ensure_multiindex
 )
+from titan.market import SectorAnalyzer
 
 
 def setup_logging(level="INFO"):
@@ -125,12 +126,20 @@ def get_market_data(tickers_override=None, cache_ttl_hours=DEFAULT_OHLCV_TTL_HOU
             data = pd.read_parquet(OHLCV_CACHE_FILE)
             if not isinstance(data.columns, pd.MultiIndex):
                 data = None
+            elif tickers:
+                # Check if the requested tickers are actually in the cache
+                cached_tickers = data.columns.levels[0]
+                missing = sum(1 for t in tickers if t not in cached_tickers)
+                if missing > len(tickers) * 0.05:  # If more than 5% missing
+                    print(f"  Cache missing {missing} requested tickers. Invalidating...")
+                    data = None
         except:
             data = None
     
     if data is None:
         print("  Downloading market data (1-2 minutes)...")
-        tickers_plus = list(dict.fromkeys(tickers + ["SPY", "^VIX"]))
+        from titan.config import SECTOR_ETFS
+        tickers_plus = list(dict.fromkeys(tickers + ["SPY", "^VIX"] + list(SECTOR_ETFS.values())))
         
         chunk_size = 100
         data_frames = []
@@ -190,7 +199,7 @@ def _conviction_bonus(mom_score, accum_score, rs_pct):
 
 
 def process_ticker(ticker, data, mkt_status, spy_close, settings,
-                   spy_df=None, all_stock_returns=None):
+                   spy_df=None, all_stock_returns=None, top_sectors=None, risk_manager=None):
     """Process a single ticker and return setup if valid.
 
     Enhanced with momentum scoring, volume accumulation detection,
@@ -247,6 +256,20 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         validator = StrategyValidator(df)
         if GAP_PROTECTION and not validator.check_gap_risk():
             return None, "Gap Risk", None
+
+        # AVWAP Check
+        avwap = validator.calculate_anchored_vwap(lookback=126)
+        avwap_distance = 0.0
+        if avwap is not None and avwap > 0:
+            avwap_distance = float((c / avwap) - 1)
+            # Breakouts must clear the 6-month Anchored VWAP
+            if is_breakout and c < avwap:
+                return None, "Rejected (Quality)", "Price below 6M Anchored VWAP"
+
+        # Get sector and check against top sectors
+        sector = SectorMapper.get_sector(ticker)
+        if top_sectors and sector not in top_sectors:
+            return None, "Sector Weakness", None
 
         # Calculate enhanced selection signals
         accum_score = validator.volume_accumulation_score()
@@ -318,24 +341,28 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             oos_pf = oos_res.get('pf', 0)
             oos_wr = oos_res.get('win_rate', 0)
 
-            # Hard reject: OOS is clearly unprofitable
-            if oos_pf < 0.8 and oos_trades >= 5:
+            # Hard reject: OOS is losing money
+            if oos_pf < 1.0 and oos_trades >= 5:
                 return None, "Rejected (OOS)", (
                     f"OOS PF: {oos_pf:.2f} (N={oos_trades})")
 
             # Confidence penalty: OOS below breakeven threshold
             if oos_pf < V2_OOS_MIN_PF:
-                oos_penalty += 10
+                oos_penalty += 15
 
             # Confidence penalty: win rate decayed significantly
             wr_drop = (res['win_rate'] - oos_wr) / 100.0
             if wr_drop > V2_OOS_DECAY_THRESHOLD:
-                oos_penalty += 8
+                oos_penalty += 15
 
         # Calculate setup
         trigger = float(df['High'].iloc[-16:-1].max()) + 0.02 if is_breakout else c
         stop = trigger - (atr * 2)
         target = trigger + (atr * 3.5)
+        
+        # Dynamic trade management
+        breakeven_trigger = trigger + atr
+        trailing_stop = atr * 1.5
 
         risk_per_share = trigger - stop
         if risk_per_share <= 0:
@@ -351,8 +378,13 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             return None, "Earnings Risk", None
 
         # Position sizing
-        risk_amt = min(RISK_PER_TRADE, ACCOUNT_SIZE * MAX_RISK_PCT_PER_TRADE / 100)
-        shares = max(1, int(risk_amt / risk_per_share))
+        if risk_manager:
+            shares = risk_manager.calculate_position_shares(trigger, stop, atr, mkt_status)
+        else:
+            # Fallback
+            risk_amt = min(RISK_PER_TRADE, ACCOUNT_SIZE * MAX_RISK_PCT_PER_TRADE / 100)
+            shares = max(1, int(risk_amt / risk_per_share))
+
         max_shares = DataValidator.max_position_size(vol_avg, c, MAX_POSITION_PCT_OF_VOLUME)
         shares = min(shares, max_shares) if max_shares > 0 else shares
 
@@ -450,8 +482,7 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         R = avg_win / (avg_loss + 1e-9)
         kelly = max(0, (W * R - (1 - W)) / R) * 0.25 * 100
 
-        # Get sector and earnings info
-        sector = SectorMapper.get_sector(ticker)
+        # Get earnings info
         earnings_date, days_to = EarningsCalendar.get_earnings_date(ticker)
         earnings_call = f"{days_to:+d}d" if days_to else "Unknown"
 
@@ -489,6 +520,9 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             momentum_score=mom_score,
             accumulation_score=accum_score,
             rs_percentile=rs_pct,
+            breakeven_trigger=breakeven_trigger,
+            trailing_stop=trailing_stop,
+            avwap_distance=avwap_distance,
         )
 
         return setup, "Passed", None
@@ -498,7 +532,7 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         return None, "Error", None
 
 
-def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS):
+def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS, risk_manager=None):
     """Main scanning function.
 
     Enhanced with pre-computed relative strength rankings so every
@@ -535,6 +569,17 @@ def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS):
     if mkt_score == 0:
         print("\n  BEAR MARKET - No new long positions recommended!")
 
+    # Sector Rotation Analysis
+    print("\n  Analyzing Sector Relative Strength...")
+    sector_analyzer = SectorAnalyzer(data)
+    from titan.config import TOP_SECTORS_TO_TRADE
+    top_sectors = sector_analyzer.get_top_sectors(top_n=TOP_SECTORS_TO_TRADE)
+    
+    if top_sectors:
+        print(f"  Top Sectors for Trading: {', '.join(top_sectors)}")
+    else:
+        print("  Warning: Could not determine top sectors.")
+
     # Pre-compute 63-day returns for all stocks (for RS percentile ranking)
     print("  Computing relative strength rankings...")
     all_stock_returns = {}
@@ -559,7 +604,8 @@ def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS):
         futures = {
             executor.submit(
                 process_ticker, t, data, mkt_status, spy_close, settings,
-                spy_df=spy_df, all_stock_returns=all_stock_returns
+                spy_df=spy_df, all_stock_returns=all_stock_returns,
+                top_sectors=top_sectors, risk_manager=risk_manager
             ): t
             for t in tickers
         }
@@ -705,7 +751,7 @@ def main():
     
     # Run scan
     try:
-        setups, stats, _, vix_level = scan(tickers, settings)
+        setups, stats, _, vix_level = scan(tickers, settings, risk_manager=risk_manager)
     except KeyboardInterrupt:
         print("\n  Cancelled.")
         return

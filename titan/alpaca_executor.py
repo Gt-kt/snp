@@ -65,6 +65,16 @@ class AlpacaExecutor:
         except Exception:
             return 0.0
 
+
+    def get_account_last_equity(self):
+        """Return prior-close account equity, or 0 on failure."""
+        if not self.connected:
+            return 0.0
+        try:
+            self.account = self.api.get_account()
+            return float(getattr(self.account, 'last_equity', 0.0) or 0.0)
+        except Exception:
+            return 0.0
     def get_open_order_symbols(self):
         """Return a list of symbols that already have open orders."""
         if not self.connected:
@@ -249,8 +259,7 @@ class AlpacaExecutor:
                     limit_price=round(target_price, 2)
                 ),
                 stop_loss=dict(
-                    stop_price=round(stop_price, 2),
-                    limit_price=round(stop_price * 0.99, 2) # Safety limit for slippage
+                    stop_price=round(stop_price, 2)
                 )
             )
             logger.info(f"SUCCESS: Submitted bracket order for {qty} shares of {symbol} at Limit ${entry_price:.2f}.")
@@ -259,3 +268,5 @@ class AlpacaExecutor:
         except Exception as e:
             logger.error(f"FAILED to submit order for {symbol}: {e}")
             return False
+
+

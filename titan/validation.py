@@ -166,6 +166,31 @@ class StrategyValidator:
         # Fallback: score vs SPY
         return self.relative_strength_vs_spy(spy_df, lookback)
 
+    def calculate_anchored_vwap(self, lookback=126):
+        """Calculate Anchored VWAP from the highest volume day in the lookback period."""
+        df = self.df
+        if len(df) < lookback:
+            return None
+            
+        recent_df = df.iloc[-lookback:]
+        max_vol_idx = recent_df['Volume'].idxmax()
+        
+        post_anchor_df = df.loc[max_vol_idx:].copy()
+        if len(post_anchor_df) == 0:
+            return None
+            
+        typical_price = (post_anchor_df['High'] + post_anchor_df['Low'] + post_anchor_df['Close']) / 3
+        tp_v = typical_price * post_anchor_df['Volume']
+        
+        cum_tp_v = tp_v.cumsum()
+        cum_vol = post_anchor_df['Volume'].cumsum()
+        
+        if cum_vol.iloc[-1] == 0:
+            return None
+            
+        avwap = cum_tp_v / cum_vol
+        return float(avwap.iloc[-1])
+
     def _simulate_trade(self, entry, stop, target, ohlc_data, start_idx,
                        max_hold=10, trail_risk=None, trail_r1=1.0, 
                        trail_r2=2.0, trail_r3=3.0, slippage_pct=0.003):

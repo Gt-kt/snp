@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Titan Trade Dashboard</title>
+    <!-- Use a premium sans-serif font like Inter for an institutional feel -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Header Section -->
+        <header class="dashboard-header">
+            <div class="logo-container">
+                <div class="logo-icon"></div>
+                <h1>Titan Trade <span>Terminal</span></h1>
+            </div>
+            <div class="header-status">
+                <span id="market-status" class="status-badge loading">Loading Market...</span>
+                <span id="vix-level" class="vix-badge">VIX: --</span>
+                <span id="portfolio-value" class="portfolio-val">$0.00</span>
+            </div>
+        </header>
+
+        <!-- Main Content Area -->
+        <main class="dashboard-grid">
+            
+            <!-- Alpaca Portfolio Summary Widget -->
+            <section class="widget portfolio-widget">
+                <div class="widget-header">
+                    <h2>Live Portfolio</h2>
+                    <span class="broker-tag">Alpaca Paper</span>
+                </div>
+                <div class="portfolio-stats">
+                    <div class="stat-box">
+                        <span class="label">Buying Power</span>
+                        <span id="bp-val" class="value loading-text">---</span>
+                    </div>
+                    <div class="stat-box">
+                        <span class="label">Cash Balance</span>
+                        <span id="cash-val" class="value loading-text">---</span>
+                    </div>
+                    <div class="stat-box">
+                        <span class="label">Day Trades Left</span>
+                        <span id="dt-val" class="value loading-text">---</span>
+                    </div>
+                </div>
+
+                <h3>Active Positions</h3>
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Shares</th>
+                                <th>Avg Price</th>
+                                <th>Current</th>
+                                <th>P&L %</th>
+                                <th>Market Val</th>
+                            </tr>
+                        </thead>
+                        <tbody id="positions-body">
+                            <tr><td colspan="6" class="loading-row">Connecting to Broker...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Latest Scan Results Widget -->
+            <section class="widget scan-widget">
+                <div class="widget-header">
+                    <h2>Latest Scan Results</h2>
+                    <span id="scan-timestamp" class="timestamp">Never</span>
+                </div>
+                <div class="scan-stats">
+                    <span>Scanned: <strong id="total-scanned">0</strong></span>
+                    <span>Passed: <strong id="total-passed">0</strong></span>
+                </div>
+                
+                <div class="table-container full-height">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Ticker</th>
+                                <th>Setup</th>
+                                <th>Trigger</th>
+                                <th>Grade</th>
+                                <th>Win %</th>
+                                <th>Mom / RS</th>
+                                <th>Risk/Reward</th>
+                            </tr>
+                        </thead>
+                        <tbody id="scan-body">
+                            <tr><td colspan="7" class="loading-row">Awaiting latest scan...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            
+        </main>
+    </div>
+
+    <!-- Load frontend logic -->
+    <script src="/static/app.js"></script>
+</body>
+</html>
