@@ -1,7 +1,7 @@
 import os
 import argparse
 import pandas as pd
-from titan_trade import StrategyValidator, Optimizer
+from titan import StrategyValidator, Optimizer
 import numpy as np
 
 CACHE_DIR = "cache_sp500_elite"

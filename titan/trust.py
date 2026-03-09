@@ -417,6 +417,28 @@ def print_simple_verdict(setups, trust_manager, vix_level=None):
         print(f"  |  ALLOC:   {alloc_pct:>5.1f}%    @ ${s.trigger:>8.2f}  (WAIT: {dist_pct:>4.1f}%)        |")
         print(f"  |  STOP:    ${s.stop:>8.2f}                                       |")
         print(f"  |  TARGET:  ${s.target:>8.2f}                                       |")
+
+        starter = getattr(s, 'starter_trigger', 0)
+        add_on = getattr(s, 'add_on_trigger', 0)
+        partial = getattr(s, 'partial_target', 0)
+        add_on_qty = getattr(s, 'add_on_qty', 0)
+        total_qty = getattr(s, 'planned_total_qty', shares)
+        if starter > 0 and add_on > 0 and add_on_qty > 0 and total_qty > shares:
+            plan_text = f"PLAN: Start {shares} now, add {add_on_qty} @ ${add_on:.2f}"
+            print(f"  |  {plan_text.ljust(57)}|")
+        if partial > 0:
+            partial_text = f"EXIT: Take 1/2 at ${partial:.2f}, then trail remainder"
+            print(f"  |  {partial_text.ljust(57)}|")
+        
+        b_e = getattr(s, 'breakeven_trigger', 0)
+        t_s = getattr(s, 'trailing_stop', 0)
+        av_dist = getattr(s, 'avwap_distance', 0)
+        if b_e > 0 and t_s > 0:
+            dyn_text = f"DYNAMIC: Move Stop to B/E at ${b_e:.2f}, Trail by ${t_s:.2f}"
+            print(f"  |  {dyn_text.ljust(57)}|")
+        if av_dist != 0:
+            av_text = f"AVWAP Distance: {av_dist*100:+.1f}%"
+            print(f"  |  {av_text.ljust(57)}|")
         print(f"  |  RISK: ${total_risk:>8.2f}  REWARD: ${potential_profit:>8.2f}  R:R {rr_ratio:.1f}:1     |")
         print(f"  |  Momentum: {mom:>3.0f}  Accumulation: {acc:>3.0f}  RS Rank: {rs:>3.0f}%      |")
         print(f"  +-------------------------------------------------------------+")
