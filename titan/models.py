@@ -49,6 +49,9 @@ class TitanSetup:
     oos_pf: float = 0.0
     oos_trades: int = 0
     net_expectancy: float = 0.0
+    distance_to_entry_pct: float = 0.0
+    confirmation_status: str = "WATCH"
+    entry_ready_score: float = 0.0
 
 
 class RejectionTracker:
@@ -74,6 +77,9 @@ class RejectionTracker:
             "WF Filter": 0,
             "OOS Filter": 0,
             "Not Near High": 0,
+            "Extended Above Entry": 0,
+            "Too Far From Entry": 0,
+            "Unconfirmed Setup": 0,
             "Error": 0,
             "Passed": 0
         }

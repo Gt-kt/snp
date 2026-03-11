@@ -6,8 +6,11 @@ Handles connection and order execution using the Alpaca Trade API.
 
 import os
 import logging
-import alpaca_trade_api as tradeapi
-from alpaca_trade_api.rest import TimeFrame
+
+try:
+    import alpaca_trade_api as tradeapi
+except ImportError:
+    tradeapi = None
 
 logger = logging.getLogger("titan")
 
@@ -21,6 +24,10 @@ class AlpacaExecutor:
         
         self.api = None
         self.connected = False
+        
+        if tradeapi is None:
+            logger.warning("alpaca_trade_api is not installed. Alpaca execution is disabled.")
+            return
         
         if not self.api_key or not self.secret_key:
             logger.warning("Alpaca API keys not found in environment variables.")
