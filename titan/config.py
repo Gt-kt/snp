@@ -116,8 +116,14 @@ DEFAULT_MIN_TRADES_BREAKOUT = 10
 DEFAULT_MIN_TRADES_DIP = 10
 DEFAULT_MIN_EXPECTANCY_BREAKOUT = 0.002
 DEFAULT_MIN_EXPECTANCY_DIP = 0.001
-DEFAULT_MIN_RR_BREAKOUT = 1.5
+DEFAULT_MIN_RR_BREAKOUT = 1.25
 DEFAULT_MIN_RR_DIP = 1.3
+DEFAULT_BREAKOUT_STOP_ATR_MULT = 2.0
+DEFAULT_BREAKOUT_TARGET_ATR_MULT = 2.5
+DEFAULT_LEADER_BREAKOUT_STOP_ATR_MULT = 1.8
+DEFAULT_LEADER_BREAKOUT_TARGET_ATR_MULT = 3.0
+DEFAULT_DIP_STOP_ATR_MULT = 2.0
+DEFAULT_DIP_TARGET_ATR_MULT = 3.0
 
 # =============================================================================
 # WALK-FORWARD FILTERS
@@ -208,7 +214,7 @@ SAFE_MODE_SETTINGS = {
     "min_pf_dip": 1.2,
     "min_expectancy_breakout": 0.002,
     "min_expectancy_dip": 0.001,
-    "min_rr_breakout": 1.5,
+    "min_rr_breakout": 1.25,
     "min_rr_dip": 1.3,
     "wf_min_trades": 8,
     "wf_min_pf": 1.1,
@@ -243,7 +249,7 @@ TRUST_MODE_SETTINGS = {
     "min_pf_dip": 1.25,
     "min_expectancy_breakout": 0.003,  # 0.3% per trade expectancy
     "min_expectancy_dip": 0.002,
-    "min_rr_breakout": 1.5,  # 1.5:1 minimum R:R
+    "min_rr_breakout": 1.25,  # Matches the validated breakout target profile
     "min_rr_dip": 1.5,
     "wf_min_trades": 8,
     "wf_min_pf": 1.1,

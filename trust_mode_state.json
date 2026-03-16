@@ -1,8 +1,8 @@
 {
   "trades_today": [],
   "trades_this_week": [],
-  "last_trade_date": "2026-03-11",
-  "last_week_start": "2026-03-09",
+  "last_trade_date": "2026-03-17",
+  "last_week_start": "2026-03-16",
   "consecutive_losses": 0,
   "cooloff_until": null,
   "paper_trading_started": null,

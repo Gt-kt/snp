@@ -109,7 +109,7 @@ class TrustModeManager:
         
         self.state["paper_validated"] = True
         self._save_state()
-        return True, "Paper trading validated! You may now use live trading."
+        return True, "Paper trading validated! Live routing is now available with --trust-mode --execute-orders --live-orders."
     
     def start_paper_trading(self):
         if not self.state["paper_trading_started"]:
@@ -350,6 +350,8 @@ def print_simple_verdict(setups, trust_manager, vix_level=None):
     
     trusted_setups = []
     for s in setups:
+        if not bool(getattr(s, "execution_eligible", True)):
+            continue
         grade = getattr(s, 'confidence_grade', 'F')
         t_stat = getattr(s, 't_statistic', 0)
         

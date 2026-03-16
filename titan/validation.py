@@ -8,7 +8,15 @@ import numpy as np
 import pandas as pd
 
 from .utils import atr_series, calculate_rsi, calculate_obv, calculate_ema, multi_timeframe_momentum
-from .config import MAX_GAP_PCT
+from .config import (
+    MAX_GAP_PCT,
+    DEFAULT_BREAKOUT_STOP_ATR_MULT,
+    DEFAULT_BREAKOUT_TARGET_ATR_MULT,
+    DEFAULT_LEADER_BREAKOUT_STOP_ATR_MULT,
+    DEFAULT_LEADER_BREAKOUT_TARGET_ATR_MULT,
+    DEFAULT_DIP_STOP_ATR_MULT,
+    DEFAULT_DIP_TARGET_ATR_MULT,
+)
 
 
 class StrategyValidator:
@@ -206,9 +214,18 @@ class StrategyValidator:
             day_high = highs[j]
             day_low = lows[j]
             day_close = closes[j]
-            
+
+            # Gap through stop
+            if day_open <= stop_curr:
+                fill_price = day_open * (1 - slippage_pct)
+                return (fill_price - actual_entry) / actual_entry
+
+            # Gap through target
+            if day_open >= target:
+                return (day_open - actual_entry) / actual_entry
+
             highest_since_entry = max(highest_since_entry, day_high)
-            
+
             # Trailing stop logic
             if trail_risk is not None and trail_risk > 0:
                 if highest_since_entry >= actual_entry + (trail_risk * trail_r1):
@@ -217,26 +234,17 @@ class StrategyValidator:
                     stop_curr = max(stop_curr, actual_entry + trail_risk)
                 if highest_since_entry >= actual_entry + (trail_risk * trail_r3):
                     stop_curr = max(stop_curr, actual_entry + trail_risk * 2)
-            
-            # Gap through stop
-            if day_open <= stop_curr:
-                fill_price = day_open * (1 - slippage_pct)
-                return (fill_price - actual_entry) / actual_entry
-            
+
             # Intraday stop
             if day_low <= stop_curr:
                 fill_price = stop_curr * (1 - slippage_pct * 0.5)
                 return (fill_price - actual_entry) / actual_entry
-            
-            # Gap through target
-            if day_open >= target:
-                return (day_open - actual_entry) / actual_entry
-            
+
             # Intraday target
             if day_high >= target:
                 fill_price = target * (1 - slippage_pct * 0.3)
                 return (fill_price - actual_entry) / actual_entry
-            
+
             # End of holding period
             if j == end_idx - 1:
                 fill_price = day_close * (1 - slippage_pct)
@@ -244,8 +252,9 @@ class StrategyValidator:
 
         return 0.0
 
-    def backtest_breakout(self, days=750, depth=0.22, vol_mult=1.0,
-                         target_mult=2.5, stop_mult=2.0, return_trades=False,
+    def backtest_breakout(self, days=750, depth=0.22, vol_mult=1.5,
+                         target_mult=DEFAULT_BREAKOUT_TARGET_ATR_MULT,
+                         stop_mult=DEFAULT_BREAKOUT_STOP_ATR_MULT, return_trades=False,
                          min_entry_idx=None):
         """Fast simulation of VCP Breakouts.
 
@@ -288,7 +297,12 @@ class StrategyValidator:
                 continue
             if not (sma50[i] > sma50[i-10]):
                 continue
+            if sma200[i] <= sma200[i-20]:
+                continue
             if atr[i] and closes[i] > 0 and (atr[i] / closes[i]) > 0.12:
+                continue
+            high_252 = np.max(highs[max(0, i-251):i+1])
+            if high_252 <= 0 or closes[i] < high_252 * 0.92:
                 continue
 
             h_handle = np.max(highs[i-15:i+1])
@@ -335,15 +349,15 @@ class StrategyValidator:
             if bo_h > pivot:
                 # Volume surge confirmation
                 vol_ref = bo_vol_sma20 if not np.isnan(bo_vol_sma20) else bo_vol_sma
-                if not np.isnan(vol_ref) and bo_v < (vol_ref * max(vol_mult, 1.3)):
+                if not np.isnan(vol_ref) and bo_v < (vol_ref * max(vol_mult, 1.5)):
                     continue
                 # Close above pivot (confirmed at end of day)
                 if bo_c < (pivot * 0.99):
                     continue
                 day_range = max(bo_h - bo_l, 1e-9)
                 close_pos = (bo_c - bo_l) / day_range
-                # Close in upper 45% of day range (strong close)
-                if close_pos < 0.45:
+                # Close in upper half of the range with some authority.
+                if close_pos < 0.55:
                     continue
 
                 # --- Day i+2: ENTRY at open (no lookahead) ---
@@ -363,7 +377,7 @@ class StrategyValidator:
                 outcome_pct = self._simulate_trade(
                     buy_price, stop_loss, target,
                     (closes, highs, lows, opens),
-                    i + 2, max_hold=10, trail_risk=risk, slippage_pct=0.003
+                    i + 2, max_hold=12, trail_risk=risk, slippage_pct=0.003
                 )
                 trades.append(outcome_pct)
 
@@ -386,7 +400,136 @@ class StrategyValidator:
             res['trades_list'] = trades
         return res
 
-    def backtest_dip(self, days=750, stop_mult=2.0, target_mult=3.0, return_trades=False,
+    def backtest_leader_breakout(
+        self,
+        days=750,
+        stop_mult=DEFAULT_LEADER_BREAKOUT_STOP_ATR_MULT,
+        target_mult=DEFAULT_LEADER_BREAKOUT_TARGET_ATR_MULT,
+        return_trades=False,
+        min_entry_idx=None,
+    ):
+        """Validate trend-continuation breakouts for leaders near highs.
+
+        This is broader than the classic VCP breakout test. It is intended
+        for persistent leaders that keep offering tight continuation pivots
+        but do not generate many textbook VCP handles.
+        """
+        df = self.df.iloc[-days:].copy()
+        if len(df) < 140:
+            base = {'win_rate': 0, 'pf': 0, 'trades': 0}
+            if return_trades:
+                base['trades_list'] = []
+            return base
+
+        closes = df['Close'].values
+        highs = df['High'].values
+        lows = df['Low'].values
+        opens = df['Open'].values
+        volumes = df['Volume'].values
+
+        sma50 = df['Close'].rolling(50).mean().values
+        sma200 = df['Close'].rolling(200).mean().values
+        ema21 = calculate_ema(df['Close'], 21).values
+        atr = atr_series(df).values
+        vol_sma20 = df['Volume'].rolling(20).mean().values
+
+        trades = []
+        entry_start = max(70, min_entry_idx) if min_entry_idx is not None else 70
+
+        for i in range(entry_start, len(df) - 2):
+            if not (closes[i] > sma50[i] > sma200[i]):
+                continue
+            if sma50[i] <= sma50[i - 10]:
+                continue
+            if sma200[i] <= sma200[i - 20]:
+                continue
+            if closes[i] < ema21[i] * 0.985:
+                continue
+
+            atr_val = atr[i] if i < len(atr) and not np.isnan(atr[i]) else (closes[i] * 0.02)
+            if atr_val <= 0 or (atr_val / max(closes[i], 1e-9)) > 0.12:
+                continue
+
+            high_63 = np.max(highs[max(0, i - 62):i + 1])
+            if high_63 <= 0 or (high_63 - closes[i]) / high_63 > 0.12:
+                continue
+
+            range_10 = (np.max(highs[i - 9:i + 1]) - np.min(lows[i - 9:i + 1])) / max(closes[i], 1e-9)
+            range_30 = (np.max(highs[i - 29:i + 1]) - np.min(lows[i - 29:i + 1])) / max(closes[i], 1e-9)
+            if range_10 > 0.12:
+                continue
+            if range_30 > 0 and range_10 > range_30 * 0.95:
+                continue
+
+            if not np.isnan(vol_sma20[i]) and volumes[i] > vol_sma20[i] * 2.0:
+                continue
+
+            pivot = np.max(highs[i - 10:i + 1]) + (atr_val * 0.03)
+            bo_h = highs[i + 1]
+            bo_l = lows[i + 1]
+            bo_c = closes[i + 1]
+            bo_v = volumes[i + 1]
+            vol_ref = vol_sma20[i + 1] if i + 1 < len(vol_sma20) else np.nan
+
+            if bo_h <= pivot:
+                continue
+            if not np.isnan(vol_ref) and bo_v < (vol_ref * 0.90):
+                continue
+            if bo_c < (pivot * 0.992):
+                continue
+
+            day_range = max(bo_h - bo_l, 1e-9)
+            close_pos = (bo_c - bo_l) / day_range
+            if close_pos < 0.40:
+                continue
+
+            buy_price = opens[i + 2]
+            if buy_price <= 0:
+                continue
+            if buy_price > pivot * 1.04:
+                continue
+            if buy_price < pivot * 0.965:
+                continue
+
+            stop_loss = buy_price - (atr_val * stop_mult)
+            target = buy_price + (atr_val * target_mult)
+            risk = buy_price - stop_loss
+            if risk <= 0:
+                continue
+
+            outcome_pct = self._simulate_trade(
+                buy_price, stop_loss, target,
+                (closes, highs, lows, opens),
+                i + 2,
+                max_hold=12,
+                trail_risk=risk,
+                trail_r1=1.0,
+                trail_r2=1.8,
+                trail_r3=2.6,
+                slippage_pct=0.002,
+            )
+            trades.append(outcome_pct)
+
+        if not trades:
+            base = {'win_rate': 0, 'pf': 0, 'trades': 0}
+            if return_trades:
+                base['trades_list'] = []
+            return base
+
+        wins = [t for t in trades if t > 0]
+        losses = [t for t in trades if t <= 0]
+        win_rate = float(len(wins) / len(trades) * 100)
+        gross_win = float(sum(wins))
+        gross_loss = float(abs(sum(losses)))
+        pf = float(gross_win / gross_loss if gross_loss > 0 else (100.0 if gross_win > 0 else 0))
+
+        res = {'win_rate': win_rate, 'pf': pf, 'trades': len(trades)}
+        if return_trades:
+            res['trades_list'] = trades
+        return res
+
+    def backtest_dip(self, days=750, stop_mult=DEFAULT_DIP_STOP_ATR_MULT,
+                     target_mult=DEFAULT_DIP_TARGET_ATR_MULT, return_trades=False,
                      min_entry_idx=None):
         """Fast simulation of Dip Buys (SMA50 support).
 

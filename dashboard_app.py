@@ -1,31 +1,36 @@
-import os
 import json
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from fastapi.staticfiles import StaticFiles
 
 from titan.alpaca_executor import AlpacaExecutor
+from titan.opportunity import normalize_scan_payload
 from dotenv import load_dotenv
 
 load_dotenv()
 
+APP_DIR = Path(__file__).resolve().parent
+STATIC_DIR = APP_DIR / "static"
+SCAN_RESULTS_FILE = APP_DIR / "data" / "latest_scan.json"
+
 app = FastAPI(title="Titan Trade Dashboard")
 
 # Serve the static files (HTML, CSS, JS) from the 'static' directory
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/")
 async def serve_dashboard():
-    return FileResponse("static/index.html")
+    return FileResponse(str(STATIC_DIR / "index.html"))
 
 @app.get("/api/scan-results")
 async def get_scan_results():
     """Returns the latest scan data saved by titan_trade_v3.py"""
     try:
-        with open("data/latest_scan.json", "r") as f:
+        with SCAN_RESULTS_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        return {"status": "success", "data": data}
+        return {"status": "success", "data": normalize_scan_payload(data)}
     except FileNotFoundError:
         return {"status": "pending", "message": "No scan results found yet. Run 'python titan_trade_v3.py' to generate data."}
     except Exception as e:
@@ -39,34 +44,18 @@ async def get_portfolio():
         if not executor.is_connected():
             return {"status": "error", "message": "Failed to connect to Alpaca. Check API keys."}
 
-        # Fetch basic account info
-        account_info = {
-            "buying_power": executor.get_buying_power(),
-            "cash": float(executor.trading_client.get_account().cash),
-            "portfolio_value": float(executor.trading_client.get_account().portfolio_value),
-            "day_trade_count": executor.trading_client.get_account().daytrade_count
-        }
-
-        # Fetch open positions
-        positions = executor.trading_client.get_all_positions()
-        active_positions = []
-        for p in positions:
-            active_positions.append({
-                "symbol": p.symbol,
-                "qty": float(p.qty),
-                "market_value": float(p.market_value),
-                "unrealized_pl": float(p.unrealized_pl),
-                "unrealized_plpc": float(p.unrealized_plpc) * 100, # Convert to percentage
-                "current_price": float(p.current_price),
-                "avg_entry_price": float(p.avg_entry_price)
-            })
+        account_info = executor.get_account_summary()
+        if account_info is None:
+            raise HTTPException(status_code=502, detail="Connected to Alpaca but failed to load account data.")
 
         return {
             "status": "success",
             "account": account_info,
-            "positions": active_positions
+            "positions": executor.get_positions_summary()
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Alpaca API Error: {str(e)}")
 

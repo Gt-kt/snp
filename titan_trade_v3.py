@@ -49,6 +49,9 @@ from titan import (
     DEFAULT_MIN_TRADES_BREAKOUT, DEFAULT_MIN_TRADES_DIP,
     DEFAULT_MIN_EXPECTANCY_BREAKOUT, DEFAULT_MIN_EXPECTANCY_DIP,
     DEFAULT_MIN_RR_BREAKOUT, DEFAULT_MIN_RR_DIP,
+    DEFAULT_BREAKOUT_STOP_ATR_MULT, DEFAULT_BREAKOUT_TARGET_ATR_MULT,
+    DEFAULT_LEADER_BREAKOUT_STOP_ATR_MULT, DEFAULT_LEADER_BREAKOUT_TARGET_ATR_MULT,
+    DEFAULT_DIP_STOP_ATR_MULT, DEFAULT_DIP_TARGET_ATR_MULT,
     DEFAULT_REGIME_FACTORS, TRUST_MODE_SETTINGS, SAFE_MODE_SETTINGS,
     V2_OOS_SPLIT_PCT, V2_OOS_MIN_TRADES, V2_OOS_MIN_PF,
     V2_OOS_DECAY_THRESHOLD,
@@ -68,6 +71,7 @@ from titan import (
 )
 from titan.alpaca_executor import AlpacaExecutor
 from titan.market import SectorAnalyzer
+from titan.opportunity import build_scan_export_data, build_scan_opportunity_summary
 
 
 def setup_logging(level="INFO"):
@@ -100,6 +104,289 @@ def grade_to_rank(grade):
 def get_base_market_status(mkt_status):
     """Normalize a market status like BULL+CAUTION to just BULL."""
     return (mkt_status or "NEUTRAL").split("+", 1)[0]
+
+
+def meets_minimum(value, minimum, eps=1e-9):
+    """Return True when value is effectively at or above a threshold."""
+    return float(value or 0.0) + float(eps) >= float(minimum or 0.0)
+
+
+def get_strategy_trade_multipliers(strategy_name, settings):
+    """Return the ATR stop/target plan for the given strategy."""
+    strategy = (strategy_name or "").upper()
+    settings = settings or {}
+    if strategy == "LEADER BO":
+        stop_mult = float(settings.get("leader_breakout_stop_atr_mult", DEFAULT_LEADER_BREAKOUT_STOP_ATR_MULT))
+        target_mult = float(settings.get("leader_breakout_target_atr_mult", DEFAULT_LEADER_BREAKOUT_TARGET_ATR_MULT))
+    elif strategy in ("BREAKOUT", "EARLY BO"):
+        stop_mult = float(settings.get("breakout_stop_atr_mult", DEFAULT_BREAKOUT_STOP_ATR_MULT))
+        target_mult = float(settings.get("breakout_target_atr_mult", DEFAULT_BREAKOUT_TARGET_ATR_MULT))
+    else:
+        stop_mult = float(settings.get("dip_stop_atr_mult", DEFAULT_DIP_STOP_ATR_MULT))
+        target_mult = float(settings.get("dip_target_atr_mult", DEFAULT_DIP_TARGET_ATR_MULT))
+    return max(stop_mult, 0.25), max(target_mult, 0.25)
+
+
+def get_pilot_breakout_profile(
+    strategy_name,
+    base_mkt_status,
+    sector_aligned,
+    rs_pct,
+    mom_score,
+    accum_score,
+    pre_breakout_score,
+    distance_from_high_pct,
+    backtest_stats,
+    confidence,
+    settings,
+):
+    """Return a pilot-breakout override for exceptional but low-sample names."""
+    if not settings.get("enable_pilot_breakouts", True):
+        return None
+
+    strategy = (strategy_name or "").upper()
+    if strategy not in ("BREAKOUT", "EARLY BO", "LEADER BO"):
+        return None
+    if base_mkt_status not in ("STRONG_BULL", "BULL", "RECOVERY"):
+        return None
+    if not sector_aligned:
+        return None
+    if float(pre_breakout_score or 0.0) < float(settings.get("pilot_breakout_min_prebreakout_score", 90.0)):
+        return None
+    if float(rs_pct or 0.0) < float(settings.get("pilot_breakout_min_rs", 90.0)):
+        return None
+    if float(mom_score or 0.0) < float(settings.get("pilot_breakout_min_momentum", 85.0)):
+        return None
+    if float(accum_score or 0.0) < float(settings.get("pilot_breakout_min_accumulation", 65.0)):
+        return None
+    if float(distance_from_high_pct or 100.0) > float(settings.get("pilot_breakout_max_high_distance_pct", 6.0)):
+        return None
+
+    min_grade = settings.get("pilot_breakout_min_confidence_grade", "B")
+    if grade_to_rank(confidence.get("grade")) < grade_to_rank(min_grade):
+        return None
+
+    size_scalar = min(max(float(settings.get("pilot_breakout_size_scalar", 0.5)), 0.1), 1.0)
+    base_profile = {
+        "tier": "PILOT",
+        "size_scalar": size_scalar,
+        "note_tag": "PILOT",
+    }
+
+    if strategy == "LEADER BO":
+        return {
+            **base_profile,
+            "allow_precision_override": True,
+            "leader_min_oos_trades": max(int(settings.get("pilot_leader_min_oos_trades", 5)), 0),
+            "leader_min_oos_pf": max(float(settings.get("pilot_leader_min_oos_pf", 1.4)), 0.0),
+            "min_robustness": max(float(settings.get("pilot_breakout_min_robustness", 50.0)), 55.0),
+        }
+
+    if int(backtest_stats.get("trades", 0) or 0) < max(int(settings.get("pilot_breakout_min_trades", 2)), 2):
+        return None
+    if not meets_minimum(backtest_stats.get("win_rate", 0.0), settings.get("pilot_breakout_min_winrate", 50.0)):
+        return None
+    if not meets_minimum(backtest_stats.get("pf", 0.0), settings.get("pilot_breakout_min_pf", 2.0)):
+        return None
+    if not meets_minimum(backtest_stats.get("expectancy", 0.0), settings.get("pilot_breakout_min_expectancy", 0.01)):
+        return None
+
+    return {
+        **base_profile,
+        "sample_trades_floor": max(int(settings.get("pilot_breakout_min_trades", 2)), 2),
+        "skip_regime_floor": bool(settings.get("pilot_breakout_skip_regime_floor", True)),
+        "min_robustness": float(settings.get("pilot_breakout_min_robustness", 50.0)),
+    }
+
+
+def should_allow_pilot_precision_override(
+    pilot_profile,
+    precision_rejection,
+    oos_pf,
+    oos_trades,
+    robustness_score,
+):
+    """Allow pilot leaders to bypass only the strictest precision gates."""
+    if not pilot_profile or not pilot_profile.get("allow_precision_override"):
+        return False
+    if not precision_rejection or precision_rejection[0] != "Precision Filter":
+        return False
+
+    detail = str(precision_rejection[1] or "")
+    if "reserved for STRONG_BULL" not in detail and "Leader OOS PF" not in detail:
+        return False
+    if float(robustness_score or 0.0) < float(pilot_profile.get("min_robustness", 0.0)):
+        return False
+    if int(oos_trades or 0) < int(pilot_profile.get("leader_min_oos_trades", 0)):
+        return False
+    if float(oos_pf or 0.0) < float(pilot_profile.get("leader_min_oos_pf", 0.0)):
+        return False
+    return True
+
+
+def get_precision_filter_rejection(strategy_name, mkt_status, actionability, robustness_score, oos_pf, oos_trades, settings):
+    """Return a rejection tuple when high-precision mode disqualifies a setup."""
+    if not settings.get("high_precision_mode", False):
+        return None
+
+    strategy = (strategy_name or "").upper()
+    if strategy == "LEADER BO":
+        if settings.get("leader_breakout_precision_strong_bull_only", True) and mkt_status != "STRONG_BULL":
+            return "Precision Filter", "Leader breakouts reserved for STRONG_BULL"
+        max_wait_pct = float(settings.get("leader_breakout_max_wait_pct", settings.get("max_breakout_wait_pct", 3.5)))
+        wait_pct = float(actionability.get("distance_metric_pct", 0.0) or 0.0)
+        if wait_pct > max_wait_pct:
+            return "Precision Filter", f"Leader wait {wait_pct:.1f}% > {max_wait_pct:.1f}%"
+        min_oos_trades = int(settings.get("leader_breakout_precision_min_oos_trades", 5))
+        min_oos_pf = float(settings.get("leader_breakout_precision_min_oos_pf", 2.0))
+        if int(oos_trades or 0) >= min_oos_trades and float(oos_pf or 0.0) < min_oos_pf:
+            return "Precision Filter", f"Leader OOS PF {float(oos_pf or 0.0):.2f} < {min_oos_pf:.2f}"
+        return None
+
+    if strategy == "DIP BUY":
+        min_robustness = float(settings.get("dip_precision_min_robustness", 60.0))
+        if float(robustness_score or 0.0) < min_robustness:
+            return "Precision Filter", f"Dip Rob {float(robustness_score or 0.0):.0f} < {min_robustness:.0f}"
+        min_oos_trades = int(settings.get("dip_precision_min_oos_trades", 10))
+        min_oos_pf = float(settings.get("dip_precision_min_oos_pf", 1.1))
+        if int(oos_trades or 0) >= min_oos_trades and float(oos_pf or 0.0) < min_oos_pf:
+            return "Precision Filter", f"Dip OOS PF {float(oos_pf or 0.0):.2f} < {min_oos_pf:.2f}"
+    return None
+
+
+def should_build_watchlist(results, settings):
+    """Decide whether to build the broader momentum watchlist."""
+    if not settings.get("build_watchlist", True):
+        return False
+    if settings.get("always_build_watchlist", False):
+        return True
+    min_count = max(int(settings.get("watchlist_if_fewer_than", 3)), 0)
+    return len(results or []) < min_count
+
+
+def evaluate_recent_oos_channel(oos_stats, min_trades, min_pf, min_expectancy):
+    """Classify recent OOS evidence as pass/fail/insufficient."""
+    trades = int(oos_stats.get("trades", 0) or 0)
+    pf = float(oos_stats.get("pf", 0.0) or 0.0)
+    expectancy = float(oos_stats.get("expectancy", 0.0) or 0.0)
+    if trades < max(int(min_trades or 0), 0):
+        return "insufficient", None
+    detail = f"OOS PF {pf:.2f} / Exp {expectancy:.4f} / N={trades}"
+    if pf >= float(min_pf or 0.0) and expectancy >= float(min_expectancy or 0.0):
+        return "pass", detail
+    return "fail", detail
+
+
+def evaluate_recent_wf_channel(wf_stats, min_trades, min_pf, min_passrate, min_expectancy):
+    """Classify walk-forward evidence as pass/fail/insufficient."""
+    eligible_folds = int(wf_stats.get("eligible_folds", 0) or 0)
+    trades = int(wf_stats.get("trades", 0) or 0)
+    pf = float(wf_stats.get("pf", 0.0) or 0.0)
+    pass_rate = float(wf_stats.get("pass_rate", 0.0) or 0.0)
+    expectancy = float(wf_stats.get("expectancy", 0.0) or 0.0)
+    if eligible_folds < 1 or trades < max(int(min_trades or 0), 0):
+        return "insufficient", None
+    detail = (
+        f"WF pass {pass_rate * 100:.0f}% / PF {pf:.2f} / "
+        f"Exp {expectancy:.4f} / N={trades}"
+    )
+    if (
+        pass_rate >= float(min_passrate or 0.0)
+        and pf >= float(min_pf or 0.0)
+        and expectancy >= float(min_expectancy or 0.0)
+    ):
+        return "pass", detail
+    return "fail", detail
+
+
+def get_actionable_quality_rejection(
+    strategy_name,
+    rs_pct,
+    mom_score,
+    accum_score,
+    oos_stats,
+    wf_stats,
+    settings,
+):
+    """Reject weak recent evidence from the buy-ready bucket."""
+    if not settings.get("require_recent_validation_for_actionable", True):
+        return None
+
+    strategy = (strategy_name or "").upper()
+    is_dip = strategy == "DIP BUY"
+    is_breakout_like = strategy in ("BREAKOUT", "EARLY BO", "LEADER BO")
+    if not (is_dip or is_breakout_like):
+        return None
+
+    if is_dip:
+        min_rs = float(settings.get("actionable_dip_min_rs", 45.0))
+        min_mom = float(settings.get("actionable_dip_min_momentum", 55.0))
+        min_acc = float(settings.get("actionable_dip_min_accumulation", 30.0))
+        if float(rs_pct or 0.0) < min_rs:
+            return "Research Only", f"Dip RS {float(rs_pct or 0.0):.0f} < {min_rs:.0f}"
+        if float(mom_score or 0.0) < min_mom:
+            return "Research Only", f"Dip Mom {float(mom_score or 0.0):.0f} < {min_mom:.0f}"
+        if float(accum_score or 0.0) < min_acc:
+            return "Research Only", f"Dip Acc {float(accum_score or 0.0):.0f} < {min_acc:.0f}"
+
+    oos_status, oos_detail = evaluate_recent_oos_channel(
+        oos_stats,
+        settings.get(
+            "recent_validation_min_oos_trades_breakout"
+            if is_breakout_like else "recent_validation_min_oos_trades_dip",
+            5,
+        ),
+        settings.get(
+            "recent_validation_min_oos_pf_breakout"
+            if is_breakout_like else "recent_validation_min_oos_pf_dip",
+            1.0,
+        ),
+        settings.get(
+            "recent_validation_min_oos_expectancy_breakout"
+            if is_breakout_like else "recent_validation_min_oos_expectancy_dip",
+            0.0,
+        ),
+    )
+    wf_status, wf_detail = evaluate_recent_wf_channel(
+        wf_stats,
+        settings.get(
+            "recent_validation_min_wf_trades_breakout"
+            if is_breakout_like else "recent_validation_min_wf_trades_dip",
+            5,
+        ),
+        settings.get(
+            "recent_validation_min_wf_pf_breakout"
+            if is_breakout_like else "recent_validation_min_wf_pf_dip",
+            1.0,
+        ),
+        settings.get(
+            "recent_validation_min_wf_passrate_breakout"
+            if is_breakout_like else "recent_validation_min_wf_passrate_dip",
+            0.25,
+        ),
+        settings.get(
+            "recent_validation_min_wf_expectancy_breakout"
+            if is_breakout_like else "recent_validation_min_wf_expectancy_dip",
+            0.0,
+        ),
+    )
+
+    if is_dip:
+        if wf_status == "fail":
+            return "Research Only", wf_detail
+        if oos_status == "fail" and wf_status != "pass":
+            return "Research Only", oos_detail
+        if wf_status == "pass" or oos_status == "pass":
+            return None
+        return "Research Only", "Dip lacks recent validation evidence"
+
+    if wf_status == "pass" or oos_status == "pass":
+        return None
+
+    failed_channels = [detail for status, detail in ((wf_status, wf_detail), (oos_status, oos_detail)) if status == "fail" and detail]
+    if failed_channels:
+        return "Research Only", "; ".join(failed_channels)
+    return None
 
 
 def build_runtime_settings(args, auto_manager, logger):
@@ -207,7 +494,9 @@ def build_runtime_settings(args, auto_manager, logger):
     )
     settings["partial_exit_multiple"] = float(settings.get("partial_exit_multiple", 1.5))
     settings["final_target_multiple"] = float(settings.get("final_target_multiple", 3.2))
-    settings["require_oos"] = bool(settings.get("require_oos", True) or not (args.trust_mode or args.trust_paper))
+    settings["require_oos"] = bool(
+        settings.get("require_oos", bool(args.trust_mode or args.trust_paper))
+    )
     settings["top_sectors_to_trade"] = max(
         1, int(settings.get("top_sectors_to_trade", TOP_SECTORS_TO_TRADE))
     )
@@ -253,7 +542,9 @@ def build_runtime_settings(args, auto_manager, logger):
     )
     settings["validation_cost_bps"] = max(0.0, float(settings.get("validation_cost_bps", 10.0)))
     settings["validation_slippage_bps"] = max(0.0, float(settings.get("validation_slippage_bps", 5.0)))
-    settings["require_walkforward"] = bool(settings.get("require_walkforward", True) or not (args.trust_mode or args.trust_paper))
+    settings["require_walkforward"] = bool(
+        settings.get("require_walkforward", bool(args.trust_mode or args.trust_paper))
+    )
     settings["wf_folds"] = max(2, int(settings.get("wf_folds", 3)))
     settings["wf_test_ratio"] = min(max(float(settings.get("wf_test_ratio", 0.2)), 0.10), 0.30)
     settings["wf_min_trades_breakout"] = max(3, int(settings.get("wf_min_trades_breakout", 5)))
@@ -267,7 +558,191 @@ def build_runtime_settings(args, auto_manager, logger):
     settings["regime_min_score_breakout"] = min(max(float(settings.get("regime_min_score_breakout", 0.33)), 0.0), 1.0)
     settings["regime_min_score_dip"] = min(max(float(settings.get("regime_min_score_dip", 0.34)), 0.0), 1.0)
     settings["min_robustness_score"] = min(max(float(settings.get("min_robustness_score", 55.0)), 0.0), 100.0)
-    settings["min_early_entry_robustness"] = min(max(float(settings.get("min_early_entry_robustness", 62.0)), 0.0), 100.0)
+    settings["min_early_entry_robustness"] = min(max(float(settings.get("min_early_entry_robustness", 85.0)), 0.0), 100.0)
+    settings["enable_leader_breakout_fallback"] = bool(
+        settings.get("enable_leader_breakout_fallback", True)
+    )
+    settings["leader_breakout_min_prebreakout_score"] = min(
+        max(float(settings.get("leader_breakout_min_prebreakout_score", 84.0)), 0.0), 100.0
+    )
+    settings["leader_breakout_min_rs"] = min(
+        max(float(settings.get("leader_breakout_min_rs", 85.0)), 0.0), 100.0
+    )
+    settings["leader_breakout_min_momentum"] = min(
+        max(float(settings.get("leader_breakout_min_momentum", 75.0)), 0.0), 100.0
+    )
+    settings["leader_breakout_min_accumulation"] = min(
+        max(float(settings.get("leader_breakout_min_accumulation", 60.0)), 0.0), 100.0
+    )
+    settings["leader_breakout_max_high_distance_pct"] = min(
+        max(float(settings.get("leader_breakout_max_high_distance_pct", 8.0)), 1.0), 20.0
+    )
+    settings["leader_breakout_min_trades"] = max(
+        3, int(settings.get("leader_breakout_min_trades", 5))
+    )
+    settings["leader_breakout_min_winrate"] = min(
+        max(float(settings.get("leader_breakout_min_winrate", 40.0)), 0.0), 100.0
+    )
+    settings["leader_breakout_min_pf"] = max(
+        0.8, float(settings.get("leader_breakout_min_pf", 1.25))
+    )
+    settings["leader_breakout_min_expectancy"] = float(
+        settings.get("leader_breakout_min_expectancy", 0.0005)
+    )
+    settings["leader_breakout_min_robustness"] = min(
+        max(float(settings.get("leader_breakout_min_robustness", 40.0)), 0.0), 100.0
+    )
+    settings["leader_breakout_regime_min_score"] = min(
+        max(float(settings.get("leader_breakout_regime_min_score", 0.0)), 0.0), 1.0
+    )
+    settings["high_precision_mode"] = bool(settings.get("high_precision_mode", True))
+    settings["leader_breakout_precision_strong_bull_only"] = bool(
+        settings.get("leader_breakout_precision_strong_bull_only", True)
+    )
+    settings["leader_breakout_precision_min_oos_trades"] = max(
+        int(settings.get("leader_breakout_precision_min_oos_trades", 5)), 0
+    )
+    settings["leader_breakout_precision_min_oos_pf"] = max(
+        float(settings.get("leader_breakout_precision_min_oos_pf", 2.0)), 0.0
+    )
+    settings["leader_breakout_max_wait_pct"] = max(
+        float(settings.get("leader_breakout_max_wait_pct", settings.get("max_breakout_wait_pct", 3.5))), 0.0
+    )
+    settings["dip_precision_min_robustness"] = min(
+        max(float(settings.get("dip_precision_min_robustness", 60.0)), 0.0), 100.0
+    )
+    settings["dip_precision_min_oos_trades"] = max(
+        int(settings.get("dip_precision_min_oos_trades", 10)), 0
+    )
+    settings["dip_precision_min_oos_pf"] = max(
+        float(settings.get("dip_precision_min_oos_pf", 1.1)), 0.0
+    )
+    settings["require_recent_validation_for_actionable"] = bool(
+        settings.get("require_recent_validation_for_actionable", True)
+    )
+    settings["recent_validation_min_oos_trades_breakout"] = max(
+        3, int(settings.get("recent_validation_min_oos_trades_breakout", 5))
+    )
+    settings["recent_validation_min_oos_trades_dip"] = max(
+        3, int(settings.get("recent_validation_min_oos_trades_dip", 5))
+    )
+    settings["recent_validation_min_oos_pf_breakout"] = max(
+        0.8, float(settings.get("recent_validation_min_oos_pf_breakout", 1.0))
+    )
+    settings["recent_validation_min_oos_pf_dip"] = max(
+        0.8, float(settings.get("recent_validation_min_oos_pf_dip", 1.05))
+    )
+    settings["recent_validation_min_oos_expectancy_breakout"] = float(
+        settings.get("recent_validation_min_oos_expectancy_breakout", 0.0)
+    )
+    settings["recent_validation_min_oos_expectancy_dip"] = float(
+        settings.get("recent_validation_min_oos_expectancy_dip", 0.0)
+    )
+    settings["recent_validation_min_wf_trades_breakout"] = max(
+        3, int(settings.get("recent_validation_min_wf_trades_breakout", 5))
+    )
+    settings["recent_validation_min_wf_trades_dip"] = max(
+        5, int(settings.get("recent_validation_min_wf_trades_dip", 20))
+    )
+    settings["recent_validation_min_wf_pf_breakout"] = max(
+        0.8, float(settings.get("recent_validation_min_wf_pf_breakout", 1.0))
+    )
+    settings["recent_validation_min_wf_pf_dip"] = max(
+        0.8, float(settings.get("recent_validation_min_wf_pf_dip", 1.0))
+    )
+    settings["recent_validation_min_wf_passrate_breakout"] = min(
+        max(float(settings.get("recent_validation_min_wf_passrate_breakout", 0.25)), 0.0), 1.0
+    )
+    settings["recent_validation_min_wf_passrate_dip"] = min(
+        max(float(settings.get("recent_validation_min_wf_passrate_dip", 0.34)), 0.0), 1.0
+    )
+    settings["recent_validation_min_wf_expectancy_breakout"] = float(
+        settings.get("recent_validation_min_wf_expectancy_breakout", 0.0)
+    )
+    settings["recent_validation_min_wf_expectancy_dip"] = float(
+        settings.get("recent_validation_min_wf_expectancy_dip", 0.0)
+    )
+    settings["actionable_dip_min_rs"] = min(
+        max(float(settings.get("actionable_dip_min_rs", 45.0)), 0.0), 100.0
+    )
+    settings["actionable_dip_min_momentum"] = min(
+        max(float(settings.get("actionable_dip_min_momentum", 55.0)), 0.0), 100.0
+    )
+    settings["actionable_dip_min_accumulation"] = min(
+        max(float(settings.get("actionable_dip_min_accumulation", 30.0)), 0.0), 100.0
+    )
+    settings["build_watchlist"] = bool(settings.get("build_watchlist", True))
+    settings["always_build_watchlist"] = bool(settings.get("always_build_watchlist", False))
+    settings["watchlist_if_fewer_than"] = max(int(settings.get("watchlist_if_fewer_than", 3)), 0)
+    settings["watchlist_min_score"] = max(float(settings.get("watchlist_min_score", 62.0)), 0.0)
+    settings["leader_watch_max_wait_pct"] = max(
+        float(settings.get("leader_watch_max_wait_pct", 2.5)),
+        float(settings.get("leader_breakout_max_wait_pct", settings.get("max_breakout_wait_pct", 3.5))),
+    )
+    settings["leader_watch_min_prebreakout_score"] = min(
+        max(float(settings.get("leader_watch_min_prebreakout_score", 68.0)), 0.0), 100.0
+    )
+    settings["leader_watch_min_rs"] = min(
+        max(float(settings.get("leader_watch_min_rs", 78.0)), 0.0), 100.0
+    )
+    settings["leader_watch_min_momentum"] = min(
+        max(float(settings.get("leader_watch_min_momentum", 68.0)), 0.0), 100.0
+    )
+    settings["leader_watch_min_accumulation"] = min(
+        max(float(settings.get("leader_watch_min_accumulation", 52.0)), 0.0), 100.0
+    )
+    settings["leader_watch_max_high_distance_pct"] = max(
+        float(settings.get("leader_watch_max_high_distance_pct", 10.0)), 0.0
+    )
+    settings["enable_pilot_breakouts"] = bool(settings.get("enable_pilot_breakouts", True))
+    settings["pilot_breakout_min_trades"] = max(
+        2, int(settings.get("pilot_breakout_min_trades", 2))
+    )
+    settings["pilot_breakout_min_winrate"] = min(
+        max(float(settings.get("pilot_breakout_min_winrate", 50.0)), 0.0), 100.0
+    )
+    settings["pilot_breakout_min_pf"] = max(
+        1.0, float(settings.get("pilot_breakout_min_pf", 2.0))
+    )
+    settings["pilot_breakout_min_expectancy"] = float(
+        settings.get("pilot_breakout_min_expectancy", 0.01)
+    )
+    settings["pilot_breakout_min_rr"] = max(
+        0.8, float(settings.get("pilot_breakout_min_rr", 1.1))
+    )
+    settings["pilot_breakout_min_confidence_grade"] = str(
+        settings.get("pilot_breakout_min_confidence_grade", "B")
+    ).upper()
+    settings["pilot_breakout_min_prebreakout_score"] = min(
+        max(float(settings.get("pilot_breakout_min_prebreakout_score", 90.0)), 0.0), 100.0
+    )
+    settings["pilot_breakout_min_rs"] = min(
+        max(float(settings.get("pilot_breakout_min_rs", 90.0)), 0.0), 100.0
+    )
+    settings["pilot_breakout_min_momentum"] = min(
+        max(float(settings.get("pilot_breakout_min_momentum", 85.0)), 0.0), 100.0
+    )
+    settings["pilot_breakout_min_accumulation"] = min(
+        max(float(settings.get("pilot_breakout_min_accumulation", 65.0)), 0.0), 100.0
+    )
+    settings["pilot_breakout_max_high_distance_pct"] = max(
+        float(settings.get("pilot_breakout_max_high_distance_pct", 6.0)), 0.0
+    )
+    settings["pilot_breakout_min_robustness"] = min(
+        max(float(settings.get("pilot_breakout_min_robustness", 50.0)), 0.0), 100.0
+    )
+    settings["pilot_breakout_size_scalar"] = min(
+        max(float(settings.get("pilot_breakout_size_scalar", 0.5)), 0.1), 1.0
+    )
+    settings["pilot_breakout_skip_regime_floor"] = bool(
+        settings.get("pilot_breakout_skip_regime_floor", True)
+    )
+    settings["pilot_leader_min_oos_trades"] = max(
+        0, int(settings.get("pilot_leader_min_oos_trades", 5))
+    )
+    settings["pilot_leader_min_oos_pf"] = max(
+        0.0, float(settings.get("pilot_leader_min_oos_pf", 1.4))
+    )
 
     return settings
 
@@ -309,12 +784,39 @@ def print_runtime_summary(settings, trust_mode=False):
         f"Robustness >= {settings.get('min_robustness_score', 55.0):.0f} | "
         f"Validation Costs: {settings.get('validation_cost_bps', 10.0) + settings.get('validation_slippage_bps', 5.0):.0f}bps"
     )
+    print(
+        f"    Leader Fallback: {'ON' if settings.get('enable_leader_breakout_fallback') else 'OFF'} | "
+        f"Leader PF >= {settings.get('leader_breakout_min_pf', 1.25):.2f} | "
+        f"Leader Trades >= {settings.get('leader_breakout_min_trades', 5)}"
+    )
+    print(
+        f"    Precision Mode: {'ON' if settings.get('high_precision_mode') else 'OFF'} | "
+        f"Leader Wait <= {settings.get('leader_breakout_max_wait_pct', settings.get('max_breakout_wait_pct', 3.5)):.1f}% | "
+        f"Leader OOS PF >= {settings.get('leader_breakout_precision_min_oos_pf', 2.0):.2f}"
+    )
+    print(
+        f"    Recent Validation: {'ON' if settings.get('require_recent_validation_for_actionable') else 'OFF'} | "
+        f"Dip RS >= {settings.get('actionable_dip_min_rs', 45.0):.0f} | "
+        f"Dip Acc >= {settings.get('actionable_dip_min_accumulation', 30.0):.0f}"
+    )
+    print(
+        f"    Pilot Breakouts: {'ON' if settings.get('enable_pilot_breakouts') else 'OFF'} | "
+        f"Pilot Trades >= {settings.get('pilot_breakout_min_trades', 2)} | "
+        f"Pilot Size: {settings.get('pilot_breakout_size_scalar', 0.5) * 100:.0f}%"
+    )
+    print(
+        f"    Research List: {'ON' if settings.get('build_watchlist') else 'OFF'} | "
+        f"Build if setups < {settings.get('watchlist_if_fewer_than', 3)} | "
+        f"Min Score >= {settings.get('watchlist_min_score', 62.0):.0f}"
+    )
 
 
 def manual_strategy_priority(setup):
     """Rank earlier, leadership-style entries ahead of reactive setups."""
+    if str(getattr(setup, "opportunity_tier", "VALIDATED")).upper() == "PILOT":
+        return 0
     strategy = getattr(setup, 'strategy', '')
-    if strategy == 'EARLY BO':
+    if strategy in ('EARLY BO', 'LEADER BO'):
         return 3
     if strategy == 'BREAKOUT':
         return 2
@@ -325,8 +827,12 @@ def manual_action_label(setup):
     """Create a plain-English action label for discretionary trading."""
     strategy = getattr(setup, 'strategy', '')
     ready = getattr(setup, 'confirmation_status', 'READY') == 'READY'
+    if str(getattr(setup, "opportunity_tier", "VALIDATED")).upper() == "PILOT":
+        return 'BUY PILOT' if ready else 'WATCH PILOT'
     if strategy == 'EARLY BO':
         return 'BUY STARTER' if ready else 'WATCH START'
+    if strategy == 'LEADER BO':
+        return 'BUY LEAD' if ready else 'WATCH LEAD'
     if strategy == 'BREAKOUT':
         return 'BUY BO' if ready else 'WATCH BO'
     return 'BUY SUPPORT' if ready else 'WATCH DIP'
@@ -387,14 +893,14 @@ def print_manual_trade_board(setups, settings, top_sectors=None):
     print("  OOS = net PF / trades, WF = net PF / pass rate.")
 
 
-def print_watchlist_board(watchlist, top_sectors=None):
-    """Print a stalking list for strong names that are not buy-ready yet."""
+def print_watchlist_board(watchlist, top_sectors=None, title="Watchlist Candidates", footer=None):
+    """Print a research-only stalking list for names that are not buy-ready."""
     if not watchlist:
         return
 
     top_sectors = top_sectors or []
 
-    print("\n  Watchlist Candidates:\n")
+    print(f"\n  {title}:\n")
     table = []
     for item in watchlist:
         sector_tag = 'TOP' if top_sectors and item.get('sector', '') in top_sectors else '-'
@@ -421,7 +927,9 @@ def print_watchlist_board(watchlist, top_sectors=None):
         ],
         tablefmt='grid'
     ))
-    print("\n  Watchlist names are stalk candidates only. Wait for confirmation before buying.")
+    print(
+        f"\n  {footer or 'Research watchlist names are not buy-ready. They bypass full validation and require fresh review before any trade.'}"
+    )
 
 def apply_validation_costs(trades, settings):
     """Apply a flat round-trip cost model to historical trades."""
@@ -478,14 +986,28 @@ def get_adjusted_backtest_stats(backtest_res, settings):
 
 
 
-def run_strategy_backtest(validator, is_breakout, return_trades=True, min_entry_idx=None):
+def run_strategy_backtest(validator, is_breakout, return_trades=True, min_entry_idx=None, strategy_variant='standard', settings=None):
     """Run the selected strategy with a consistent interface."""
     if is_breakout:
+        if strategy_variant == 'leader':
+            stop_mult, target_mult = get_strategy_trade_multipliers("LEADER BO", settings)
+            return validator.backtest_leader_breakout(
+                stop_mult=stop_mult,
+                target_mult=target_mult,
+                return_trades=return_trades,
+                min_entry_idx=min_entry_idx,
+            )
+        stop_mult, target_mult = get_strategy_trade_multipliers("BREAKOUT", settings)
         return validator.backtest_breakout(
+            stop_mult=stop_mult,
+            target_mult=target_mult,
             return_trades=return_trades,
             min_entry_idx=min_entry_idx,
         )
+    stop_mult, target_mult = get_strategy_trade_multipliers("DIP BUY", settings)
     return validator.backtest_dip(
+        stop_mult=stop_mult,
+        target_mult=target_mult,
         return_trades=return_trades,
         min_entry_idx=min_entry_idx,
     )
@@ -522,7 +1044,7 @@ def get_regime_segments(df, segments=3):
 
 
 
-def evaluate_regime_stability(df, spy_df, settings, is_breakout):
+def evaluate_regime_stability(df, spy_df, settings, is_breakout, strategy_variant='standard'):
     """Check whether a strategy stays profitable across broad historical regimes."""
     segments = get_regime_segments(df, segments=3)
     if not segments:
@@ -539,7 +1061,13 @@ def evaluate_regime_stability(df, spy_df, settings, is_breakout):
         seg_spy = spy_df.iloc[start:end] if spy_df is not None else None
         labels.append(get_regime_label(seg_spy))
         validator = StrategyValidator(seg_df)
-        seg_res = run_strategy_backtest(validator, is_breakout, return_trades=True)
+        seg_res = run_strategy_backtest(
+            validator,
+            is_breakout,
+            return_trades=True,
+            strategy_variant=strategy_variant,
+            settings=settings,
+        )
         seg_stats = get_adjusted_backtest_stats(seg_res, settings)
         if seg_stats['trades'] >= min_trades and seg_stats['pf'] >= min_pf and seg_stats['expectancy'] > min_exp:
             passed += 1
@@ -552,7 +1080,7 @@ def evaluate_regime_stability(df, spy_df, settings, is_breakout):
 
 
 
-def evaluate_train_test_window(train_df, test_df, settings, is_breakout, min_trades, min_pf, min_exp):
+def evaluate_train_test_window(train_df, test_df, settings, is_breakout, min_trades, min_pf, min_exp, strategy_variant='standard'):
     """Validate a fold only when the training window qualified first."""
     if len(train_df) < 120 or len(test_df) < 120:
         return None
@@ -560,11 +1088,23 @@ def evaluate_train_test_window(train_df, test_df, settings, is_breakout, min_tra
     train_validator = StrategyValidator(train_df)
     test_validator = StrategyValidator(test_df)
     train_stats = get_adjusted_backtest_stats(
-        run_strategy_backtest(train_validator, is_breakout, return_trades=True),
+        run_strategy_backtest(
+            train_validator,
+            is_breakout,
+            return_trades=True,
+            strategy_variant=strategy_variant,
+            settings=settings,
+        ),
         settings,
     )
     test_stats = get_adjusted_backtest_stats(
-        run_strategy_backtest(test_validator, is_breakout, return_trades=True),
+        run_strategy_backtest(
+            test_validator,
+            is_breakout,
+            return_trades=True,
+            strategy_variant=strategy_variant,
+            settings=settings,
+        ),
         settings,
     )
 
@@ -588,7 +1128,7 @@ def evaluate_train_test_window(train_df, test_df, settings, is_breakout, min_tra
 
 
 
-def evaluate_walk_forward_robustness(df, settings, is_breakout):
+def evaluate_walk_forward_robustness(df, settings, is_breakout, strategy_variant='standard'):
     """Measure whether the edge survives repeated forward windows."""
     folds = int(settings.get('wf_folds', 3))
     test_ratio = float(settings.get('wf_test_ratio', 0.2))
@@ -609,7 +1149,14 @@ def evaluate_walk_forward_robustness(df, settings, is_breakout):
         train_df = df.iloc[:test_start]
         test_df = df.iloc[test_start:test_end]
         fold_result = evaluate_train_test_window(
-            train_df, test_df, settings, is_breakout, min_trades, min_pf, min_exp
+            train_df,
+            test_df,
+            settings,
+            is_breakout,
+            min_trades,
+            min_pf,
+            min_exp,
+            strategy_variant=strategy_variant,
         )
         if not fold_result:
             continue
@@ -757,6 +1304,8 @@ def filter_execution_candidates(setups, settings):
     skipped = []
     for s in setups:
         reasons = []
+        if not bool(getattr(s, "execution_eligible", True)):
+            reasons.append("manual-only")
         if grade_to_rank(getattr(s, "confidence_grade", "F")) < min_grade:
             reasons.append(f"grade<{settings.get('min_confidence_grade', 'C')}")
         if getattr(s, "momentum_score", 0.0) < min_mom:
@@ -912,7 +1461,7 @@ def assess_setup_actionability(df, strategy_name, current_price, trigger, sma50,
     current_price = float(current_price or 0.0)
     sma50 = float(sma50 or 0.0)
     atr_value = max(float(atr_value or 0.0), 0.01)
-    confirm_key = 'confirm_days_breakout' if strategy_name in ('BREAKOUT', 'EARLY BO') else 'confirm_days_dip'
+    confirm_key = 'confirm_days_breakout' if strategy_name in ('BREAKOUT', 'EARLY BO', 'LEADER BO') else 'confirm_days_dip'
     confirm_days = max(1, int(settings.get(confirm_key, 2)))
     recent = df.iloc[-confirm_days:].copy()
     atr_pct = (atr_value / max(current_price, 1e-9)) * 100.0
@@ -925,9 +1474,12 @@ def assess_setup_actionability(df, strategy_name, current_price, trigger, sma50,
         'distance_metric_pct': 0.0,
     }
 
-    if strategy_name in ('BREAKOUT', 'EARLY BO'):
+    if strategy_name in ('BREAKOUT', 'EARLY BO', 'LEADER BO'):
         wait_pct = max(reference_trigger - current_price, 0.0) / max(current_price, 1e-9) * 100.0
-        max_wait_pct = float(settings.get('max_breakout_wait_pct', 3.5))
+        if strategy_name == 'LEADER BO':
+            max_wait_pct = float(settings.get('leader_breakout_max_wait_pct', settings.get('max_breakout_wait_pct', 3.5)))
+        else:
+            max_wait_pct = float(settings.get('max_breakout_wait_pct', 3.5))
         base_range_pct = (recent['High'].max() - recent['Low'].min()) / max(current_price, 1e-9) * 100.0
         closes_above_support = bool((recent['Close'] >= sma50 * 0.99).all())
         pressing_pivot = bool(recent['High'].max() >= reference_trigger * 0.985 or wait_pct <= 1.0)
@@ -1031,7 +1583,21 @@ def build_watchlist_candidates(tickers, data, settings, top_sectors=None, spy_df
 
     preferred_sectors = set(top_sectors or [])
     watch_limit = max(int(settings.get('watchlist_top_n', settings.get('manual_top_n', 12))), 5)
-    watchlist = []
+    watchlist = {}
+    watch_score_floor = float(settings.get('watchlist_min_score', 62.0))
+
+    def store_candidate(item):
+        existing = watchlist.get(item['ticker'])
+        if existing is None:
+            watchlist[item['ticker']] = item
+            return
+        existing_stalk = existing.get('status') == 'STALK'
+        item_stalk = item.get('status') == 'STALK'
+        if item_stalk and not existing_stalk:
+            watchlist[item['ticker']] = item
+            return
+        if item.get('score', 0.0) > existing.get('score', 0.0):
+            watchlist[item['ticker']] = item
 
     for ticker in tickers:
         try:
@@ -1079,29 +1645,88 @@ def build_watchlist_candidates(tickers, data, settings, top_sectors=None, spy_df
                 if trailing_high > 0 else 100.0
             )
             dip_distance_pct = ((c - sma50) / max(sma50, 1e-9)) * 100.0
+            ema21 = float(df['Close'].ewm(span=21, adjust=False).mean().iloc[-1])
 
             breakout_candidate = bool(
                 c > sma50 > sma200
                 and distance_from_high_pct <= max(float(settings.get('breakout_high_proximity_pct', 12.0)) + 4.0, 15.0)
+            )
+            leader_candidate = bool(
+                c > ema21 > sma50 > sma200
+                and rs_pct >= float(settings.get('leader_watch_min_rs', 78.0))
+                and mom_score >= float(settings.get('leader_watch_min_momentum', 68.0))
+                and accum_score >= float(settings.get('leader_watch_min_accumulation', 52.0))
+                and distance_from_high_pct <= float(settings.get('leader_watch_max_high_distance_pct', 10.0))
             )
             dip_candidate = bool(
                 c > sma200
                 and sma50 >= sma200 * 0.99
                 and -4.0 < dip_distance_pct < 6.0
             )
-            if not (breakout_candidate or dip_candidate):
+            if not (leader_candidate or breakout_candidate or dip_candidate):
                 continue
 
             pre_breakout_score = 0.0
-            if breakout_candidate:
+            prebreakout_plan = None
+            if leader_candidate or breakout_candidate:
                 prebreakout_plan = analyze_pre_breakout(
                     df, validator, c, atr, sma50, sma200, accum_score, mom_score, rs_pct, settings
                 )
+                pre_breakout_score = float(prebreakout_plan.get('score', 0.0))
+
+            if leader_candidate and pre_breakout_score >= float(settings.get('leader_watch_min_prebreakout_score', 68.0)):
+                trigger = round(float(prebreakout_plan.get('pivot_trigger', float(df['High'].iloc[-16:-1].max()) + 0.02)), 2)
+                leader_watch_settings = dict(settings)
+                leader_watch_settings['leader_breakout_max_wait_pct'] = max(
+                    float(settings.get('leader_watch_max_wait_pct', 2.5)),
+                    float(settings.get('leader_breakout_max_wait_pct', settings.get('max_breakout_wait_pct', 3.5))),
+                )
+                actionability = assess_setup_actionability(
+                    df, 'LEADER BO', c, trigger, sma50, atr, leader_watch_settings, reference_trigger=trigger
+                )
+                distance_to_entry_pct = float(actionability.get('distance_metric_pct', 0.0))
+                watch_score = (
+                    rs_pct * 0.34 +
+                    mom_score * 0.22 +
+                    accum_score * 0.18 +
+                    pre_breakout_score * 0.18 +
+                    max(0.0, 18.0 - distance_from_high_pct)
+                )
+                if sector_aligned:
+                    watch_score += 6
+                if actionability.get('confirmed', False):
+                    watch_score += 5
+                elif actionability.get('actionable', False):
+                    watch_score += 3
+                if distance_to_entry_pct > float(settings.get('leader_watch_max_wait_pct', 2.5)):
+                    watch_score -= min(12.0, (distance_to_entry_pct - float(settings.get('leader_watch_max_wait_pct', 2.5))) * 2.5)
+                if watch_score >= watch_score_floor:
+                    _, days_to = EarningsCalendar.get_earnings_date(ticker)
+                    earnings_call = f"{days_to:+d}d" if days_to is not None else 'Unknown'
+                    store_candidate({
+                        'ticker': ticker,
+                        'theme': 'LEADER',
+                        'status': 'STALK' if actionability.get('confirmed', False) else 'RESEARCH',
+                        'price': round(c, 2),
+                        'trigger': round(trigger, 2),
+                        'distance_to_entry_pct': round(distance_to_entry_pct, 2),
+                        'sector': sector,
+                        'sector_aligned': sector_aligned,
+                        'rs_percentile': round(rs_pct, 1),
+                        'momentum_score': round(mom_score, 1),
+                        'accumulation_score': round(accum_score, 1),
+                        'earnings_call': earnings_call,
+                        'score': round(watch_score, 1),
+                        'why': 'Strong leader continuation near highs',
+                        'pre_breakout_score': round(pre_breakout_score, 1),
+                        'research_only': True,
+                    })
+
+            if breakout_candidate:
                 trigger = round(float(prebreakout_plan.get('pivot_trigger', float(df['High'].iloc[-16:-1].max()) + 0.02)), 2)
                 actionability = assess_setup_actionability(
                     df, 'BREAKOUT', c, trigger, sma50, atr, settings, reference_trigger=trigger
                 )
-                pre_breakout_score = float(prebreakout_plan.get('score', 0.0))
                 distance_to_entry_pct = float(actionability.get('distance_metric_pct', 0.0))
                 watch_score = (
                     rs_pct * 0.30 +
@@ -1122,7 +1747,7 @@ def build_watchlist_candidates(tickers, data, settings, top_sectors=None, spy_df
                 if distance_to_entry_pct > max_wait_pct:
                     watch_score -= min(10.0, (distance_to_entry_pct - max_wait_pct) * 2.0)
                 theme = 'BREAKOUT'
-                status = 'HOT' if actionability.get('confirmed', False) else 'WATCH'
+                status = 'STALK' if actionability.get('confirmed', False) else 'RESEARCH'
                 why = str(actionability.get('reason', 'Near breakout pivot')).replace('Breakout structure confirmed', 'Strong breakout structure')
             else:
                 trigger = round(max(float(sma50), c), 2)
@@ -1147,15 +1772,15 @@ def build_watchlist_candidates(tickers, data, settings, top_sectors=None, spy_df
                 if distance_to_entry_pct > max_extension_pct:
                     watch_score -= min(12.0, (distance_to_entry_pct - max_extension_pct) * 2.5)
                 theme = 'DIP BUY'
-                status = 'HOT' if actionability.get('confirmed', False) else 'WATCH'
+                status = 'STALK' if actionability.get('confirmed', False) else 'RESEARCH'
                 why = str(actionability.get('reason', 'Pullback needs support hold')).replace('Dip support confirmed', 'Strong support hold')
 
-            if watch_score < 65:
+            if watch_score < watch_score_floor:
                 continue
 
             _, days_to = EarningsCalendar.get_earnings_date(ticker)
             earnings_call = f"{days_to:+d}d" if days_to is not None else 'Unknown'
-            watchlist.append({
+            store_candidate({
                 'ticker': ticker,
                 'theme': theme,
                 'status': status,
@@ -1171,21 +1796,23 @@ def build_watchlist_candidates(tickers, data, settings, top_sectors=None, spy_df
                 'score': round(watch_score, 1),
                 'why': why,
                 'pre_breakout_score': round(pre_breakout_score, 1),
+                'research_only': True,
             })
         except Exception:
             continue
 
-    watchlist.sort(
+    watchlist_items = list(watchlist.values())
+    watchlist_items.sort(
         key=lambda item: (
             -int(bool(item.get('sector_aligned', False))),
-            -int(item.get('status') == 'HOT'),
+            -int(item.get('status') == 'STALK'),
             -float(item.get('score', 0.0)),
             -float(item.get('rs_percentile', 0.0)),
             -float(item.get('momentum_score', 0.0)),
             float(item.get('distance_to_entry_pct', 0.0)),
         )
     )
-    return watchlist[:watch_limit]
+    return watchlist_items[:watch_limit]
 
 def load_managed_portfolio(logger=None):
     """Load managed positions from disk and normalize legacy entries."""
@@ -1611,7 +2238,7 @@ def _conviction_bonus(mom_score, accum_score, rs_pct):
 
 
 def process_ticker(ticker, data, mkt_status, spy_close, settings,
-                   spy_df=None, all_stock_returns=None):
+                   spy_df=None, all_stock_returns=None, top_sectors=None):
     """Process a single ticker and return setup if valid.
 
     Enhanced with momentum scoring, volume accumulation detection,
@@ -1657,6 +2284,9 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
 
         if c < sma200:
             return None, "Downtrend (Bear)", None
+
+        sector = SectorMapper.get_sector(ticker)
+        sector_aligned = bool(top_sectors) and (sector in set(top_sectors))
 
         # Setup detection
         trailing_high = float(df['High'].iloc[-252:].max())
@@ -1706,6 +2336,17 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
                 df, validator, c, atr, sma50, sma200, accum_score, mom_score, rs_pct, settings
             )
 
+        leader_signal_ready = bool(
+            is_breakout and
+            settings.get('enable_leader_breakout_fallback', True) and
+            prebreakout_plan.get('score', 0.0) >= float(settings.get('leader_breakout_min_prebreakout_score', 84.0)) and
+            rs_pct >= float(settings.get('leader_breakout_min_rs', 85.0)) and
+            mom_score >= float(settings.get('leader_breakout_min_momentum', 75.0)) and
+            accum_score >= float(settings.get('leader_breakout_min_accumulation', 60.0)) and
+            distance_from_high_pct <= float(settings.get('leader_breakout_max_high_distance_pct', 8.0)) and
+            (sector_aligned or base_mkt_status in ('STRONG_BULL', 'BULL', 'RECOVERY'))
+        )
+
         if is_dip and settings.get('disable_dip_in_weak_regimes', True):
             if base_mkt_status in ('Correction', 'BEAR', 'STRONG_BEAR'):
                 return None, "Regime Filter", f"Dip disabled in {base_mkt_status}"
@@ -1715,18 +2356,28 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             return None, "Rejected (Low Win%)", "Weak momentum + accumulation"
 
         # Backtest
+        validation_variant = 'standard'
+        validation_tag = 'STD'
         if is_breakout:
-            res = run_strategy_backtest(validator, True, return_trades=True)
+            res = run_strategy_backtest(
+                validator,
+                True,
+                return_trades=True,
+                strategy_variant=validation_variant,
+                settings=settings,
+            )
             strategy_name = "BREAKOUT"
             min_wr = settings.get('min_winrate_breakout', DEFAULT_MIN_WIN_RATE_BREAKOUT)
             min_pf = settings.get('min_pf_breakout', DEFAULT_MIN_PF_BREAKOUT)
             min_trades = settings.get('min_trades_breakout', DEFAULT_MIN_TRADES_BREAKOUT)
+            min_exp = settings.get('min_expectancy_breakout', DEFAULT_MIN_EXPECTANCY_BREAKOUT)
         else:
-            res = run_strategy_backtest(validator, False, return_trades=True)
+            res = run_strategy_backtest(validator, False, return_trades=True, settings=settings)
             strategy_name = "DIP BUY"
             min_wr = settings.get('min_winrate_dip', DEFAULT_MIN_WIN_RATE_DIP)
             min_pf = settings.get('min_pf_dip', DEFAULT_MIN_PF_DIP)
             min_trades = settings.get('min_trades_dip', DEFAULT_MIN_TRADES_DIP)
+            min_exp = settings.get('min_expectancy_dip', DEFAULT_MIN_EXPECTANCY_DIP)
 
         net_stats = get_adjusted_backtest_stats(res, settings)
         res.update({
@@ -1737,20 +2388,85 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             'trades_list': net_stats['trades_list'],
         })
 
+        if leader_signal_ready and is_breakout:
+            breakout_failed_quality = (
+                res['trades'] < min_trades or
+                res['win_rate'] < min_wr or
+                res['pf'] < min_pf or
+                res['expectancy'] < min_exp
+            )
+            if breakout_failed_quality:
+                leader_res = run_strategy_backtest(
+                    validator,
+                    True,
+                    return_trades=True,
+                    strategy_variant='leader',
+                    settings=settings,
+                )
+                leader_stats = get_adjusted_backtest_stats(leader_res, settings)
+                leader_res.update({
+                    'trades': leader_stats['trades'],
+                    'win_rate': leader_stats['win_rate'],
+                    'pf': leader_stats['pf'],
+                    'expectancy': leader_stats['expectancy'],
+                    'trades_list': leader_stats['trades_list'],
+                })
+                leader_ok = (
+                    leader_res['trades'] >= int(settings.get('leader_breakout_min_trades', 5)) and
+                    leader_res['win_rate'] >= float(settings.get('leader_breakout_min_winrate', 40.0)) and
+                    leader_res['pf'] >= float(settings.get('leader_breakout_min_pf', 1.25)) and
+                    leader_res['expectancy'] >= float(settings.get('leader_breakout_min_expectancy', 0.0005))
+                )
+                if leader_ok:
+                    res = leader_res
+                    net_stats = leader_stats
+                    strategy_name = "LEADER BO"
+                    validation_variant = 'leader'
+                    validation_tag = 'LEADER'
+                    min_wr = float(settings.get('leader_breakout_min_winrate', 40.0))
+                    min_pf = float(settings.get('leader_breakout_min_pf', 1.25))
+                    min_trades = int(settings.get('leader_breakout_min_trades', 5))
+                    min_exp = float(settings.get('leader_breakout_min_expectancy', 0.0005))
+
+        pilot_profile = None
+        if is_breakout:
+            preliminary_conf = StatisticalConfidenceScorer.calculate_confidence(
+                trades=res['trades'],
+                win_rate=res['win_rate'],
+                profit_factor=res['pf'],
+                expectancy=res.get('expectancy', 0),
+                oos_pf=None,
+            )
+            pilot_profile = get_pilot_breakout_profile(
+                strategy_name,
+                base_mkt_status,
+                sector_aligned,
+                rs_pct,
+                mom_score,
+                accum_score,
+                prebreakout_plan.get('score', 0.0),
+                distance_from_high_pct,
+                res,
+                preliminary_conf,
+                settings,
+            )
+        pilot_quality_override = bool(pilot_profile and "sample_trades_floor" in pilot_profile)
+
         # Quality filter - Need profitable backtest results
         if res['trades'] < min_trades:
-            return None, "Rejected (Quality)", f"Trades: {res['trades']} < {min_trades}"
+            if not pilot_quality_override or res['trades'] < int(pilot_profile.get('sample_trades_floor', min_trades)):
+                return None, "Rejected (Quality)", f"Trades: {res['trades']} < {min_trades}"
         if res['win_rate'] < min_wr:
-            return None, "Rejected (Quality)", f"WR: {res['win_rate']:.0f}% < {min_wr:.0f}%"
+            if not pilot_quality_override:
+                return None, "Rejected (Quality)", f"WR: {res['win_rate']:.0f}% < {min_wr:.0f}%"
         if res['pf'] < min_pf:
-            return None, "Rejected (Quality)", f"PF: {res['pf']:.2f} < {min_pf:.2f}"
+            if not pilot_quality_override:
+                return None, "Rejected (Quality)", f"PF: {res['pf']:.2f} < {min_pf:.2f}"
 
         # Expectancy filter - reject if average trade is near zero or negative
-        min_exp = (settings.get('min_expectancy_breakout', DEFAULT_MIN_EXPECTANCY_BREAKOUT)
-                   if is_breakout else
-                   settings.get('min_expectancy_dip', DEFAULT_MIN_EXPECTANCY_DIP))
         if res['expectancy'] < min_exp:
-            return None, "Rejected (Quality)", f"Exp: {res['expectancy']:.4f} < {min_exp:.4f}"
+            if not pilot_quality_override:
+                return None, "Rejected (Quality)", f"Exp: {res['expectancy']:.4f} < {min_exp:.4f}"
 
         # --- Out-of-sample validation ---
         # Run the backtest again but only on the last 25% of data.
@@ -1765,11 +2481,22 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         oos_penalty = 0
 
         if is_breakout:
-            oos_res = validator.backtest_breakout(
-                return_trades=True, min_entry_idx=oos_start)
+            oos_res = run_strategy_backtest(
+                validator,
+                True,
+                return_trades=True,
+                min_entry_idx=oos_start,
+                strategy_variant=validation_variant,
+                settings=settings,
+            )
         else:
-            oos_res = validator.backtest_dip(
-                return_trades=True, min_entry_idx=oos_start)
+            oos_res = run_strategy_backtest(
+                validator,
+                False,
+                return_trades=True,
+                min_entry_idx=oos_start,
+                settings=settings,
+            )
 
         oos_net_stats = get_adjusted_backtest_stats(oos_res, settings)
         oos_trades = oos_net_stats.get('trades', 0)
@@ -1836,13 +2563,26 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             except Exception:
                 aligned_spy = None
 
-        wf_stats = evaluate_walk_forward_robustness(df, settings, is_breakout)
-        regime_stats = evaluate_regime_stability(df, aligned_spy, settings, is_breakout)
+        wf_stats = evaluate_walk_forward_robustness(
+            df,
+            settings,
+            is_breakout,
+            strategy_variant=validation_variant,
+        )
+        regime_stats = evaluate_regime_stability(
+            df,
+            aligned_spy,
+            settings,
+            is_breakout,
+            strategy_variant=validation_variant,
+        )
         wf_min_trades = int(settings.get('wf_min_trades_breakout' if is_breakout else 'wf_min_trades_dip', 5))
         wf_min_pf = float(settings.get('wf_min_pf_breakout' if is_breakout else 'wf_min_pf_dip', 1.0))
         wf_min_expectancy = float(settings.get('wf_min_expectancy_breakout' if is_breakout else 'wf_min_expectancy_dip', 0.0))
         wf_min_passrate = float(settings.get('wf_min_passrate_breakout' if is_breakout else 'wf_min_passrate_dip', 0.5))
         regime_floor = float(settings.get('regime_min_score_breakout' if is_breakout else 'regime_min_score_dip', 0.33))
+        if validation_variant == 'leader' and is_breakout:
+            regime_floor = float(settings.get('leader_breakout_regime_min_score', 0.0))
 
         if settings.get('require_walkforward'):
             if wf_stats.get('trades', 0) < wf_min_trades:
@@ -1855,25 +2595,35 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
                 return None, "Rejected (WF)", f"WF Exp: {wf_stats.get('expectancy', 0.0):.4f} < {wf_min_expectancy:.4f}"
 
         if regime_stats.get('count', 0) > 0 and regime_stats.get('score', 0.0) < regime_floor:
-            return None, "Rejected (Regime)", f"Regime: {regime_stats.get('score', 0.0) * 100:.0f}% < {regime_floor * 100:.0f}%"
+            if not (pilot_profile and pilot_profile.get('skip_regime_floor')):
+                return None, "Rejected (Regime)", f"Regime: {regime_stats.get('score', 0.0) * 100:.0f}% < {regime_floor * 100:.0f}%"
 
         robustness_score = calculate_robustness_score(net_stats, oos_stats, wf_stats, regime_stats, is_breakout)
-        if robustness_score < float(settings.get('min_robustness_score', 55.0)):
-            return None, "Rejected (WF)", f"Rob: {robustness_score:.0f} < {settings.get('min_robustness_score', 55.0):.0f}"
+        min_robustness = float(settings.get('min_robustness_score', 55.0))
+        if validation_variant == 'leader' and is_breakout:
+            min_robustness = float(settings.get('leader_breakout_min_robustness', 40.0))
+        if pilot_profile:
+            min_robustness = float(pilot_profile.get('min_robustness', min_robustness))
+        if robustness_score < min_robustness:
+            return None, "Rejected (WF)", f"Rob: {robustness_score:.0f} < {min_robustness:.0f}"
 
         # Calculate setup
         breakout_pivot = float(prebreakout_plan.get('pivot_trigger', float(df['High'].iloc[-16:-1].max()) + 0.02))
         early_entry_candidate = (
             is_breakout and
             prebreakout_plan.get('early_entry_ready', False) and
-            base_mkt_status in ('STRONG_BULL', 'BULL', 'RECOVERY')
+            (
+                base_mkt_status in ('STRONG_BULL', 'BULL', 'RECOVERY') or
+                (base_mkt_status == 'Correction' and leader_signal_ready)
+            )
         )
-        if early_entry_candidate and robustness_score < float(settings.get('min_early_entry_robustness', 62.0)):
+        if early_entry_candidate and robustness_score < float(settings.get('min_early_entry_robustness', 85.0)):
             early_entry_candidate = False
 
+        stop_mult, target_mult = get_strategy_trade_multipliers(strategy_name, settings)
         trigger = breakout_pivot if is_breakout else c
-        stop = trigger - (atr * 2)
-        target = trigger + (atr * 3.5)
+        stop = trigger - (atr * stop_mult)
+        target = trigger + (atr * target_mult)
         starter_trigger = trigger
         add_on_trigger = 0.0
         partial_target = 0.0
@@ -1916,6 +2666,35 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             return None, "Too Far From Entry", actionability.get('reason')
         if settings.get('require_confirmed_setup', True) and not actionability.get('confirmed', False):
             return None, "Unconfirmed Setup", actionability.get('reason')
+        quality_rejection = get_actionable_quality_rejection(
+            strategy_name,
+            rs_pct,
+            mom_score,
+            accum_score,
+            oos_stats,
+            wf_stats,
+            settings,
+        )
+        if quality_rejection:
+            return None, quality_rejection[0], quality_rejection[1]
+        precision_rejection = get_precision_filter_rejection(
+            strategy_name,
+            mkt_status,
+            actionability,
+            robustness_score,
+            oos_pf,
+            oos_trades,
+            settings,
+        )
+        if precision_rejection:
+            if not should_allow_pilot_precision_override(
+                pilot_profile,
+                precision_rejection,
+                oos_pf,
+                oos_trades,
+                robustness_score,
+            ):
+                return None, precision_rejection[0], precision_rejection[1]
 
         risk_per_share = trigger - stop
         if risk_per_share <= 0:
@@ -1926,8 +2705,10 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             if is_breakout else
             float(settings.get('min_rr_dip', DEFAULT_MIN_RR_DIP))
         )
+        if pilot_profile:
+            min_rr = min(min_rr, float(settings.get('pilot_breakout_min_rr', min_rr)))
         rr_ratio = (target - trigger) / risk_per_share
-        if rr_ratio < min_rr:
+        if not meets_minimum(rr_ratio, min_rr):
             return None, "Bad Risk/Reward", f"RR: {rr_ratio:.2f} < {min_rr:.2f}"
 
         # Earnings check
@@ -1947,7 +2728,8 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         ))
         regime_scalar = 1.0 / max(1.0, regime_factor)
         position_size_scalar = max(float(settings.get('position_size_scalar', 1.0)), 0.1)
-        risk_amt = base_risk_amt * regime_scalar * position_size_scalar
+        pilot_size_scalar = float(pilot_profile.get('size_scalar', 1.0)) if pilot_profile else 1.0
+        risk_amt = base_risk_amt * regime_scalar * position_size_scalar * pilot_size_scalar
 
         if risk_amt <= 0:
             return None, "Sizing Constraint", "No risk budget"
@@ -1995,7 +2777,7 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         if effective_risk <= 0:
             return None, "Bad Risk/Reward", "Invalid effective risk"
         effective_rr = (effective_target - effective_entry) / effective_risk
-        if effective_rr < min_rr:
+        if not meets_minimum(effective_rr, min_rr):
             return None, "Bad Risk/Reward", f"Net RR: {effective_rr:.2f} < {min_rr:.2f}"
 
         partial_mult = float(settings.get('partial_exit_multiple', 1.5))
@@ -2041,6 +2823,11 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             stat_conf['grade'] = 'D'
         else:
             stat_conf['grade'] = 'F'
+
+        if pilot_profile:
+            min_pilot_grade = settings.get("pilot_breakout_min_confidence_grade", "B")
+            if grade_to_rank(stat_conf['grade']) < grade_to_rank(min_pilot_grade):
+                return None, "Research Only", f"Pilot grade {stat_conf['grade']} < {min_pilot_grade}"
 
         t_stat = StatisticalConfidenceScorer.calculate_t_statistic(trades_list)
 
@@ -2141,7 +2928,6 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         kelly = max(0, (W * R - (1 - W)) / R) * 0.25 * 100
 
         # Get sector and earnings info
-        sector = SectorMapper.get_sector(ticker)
         earnings_date, days_to = EarningsCalendar.get_earnings_date(ticker)
         earnings_call = f"{days_to:+d}d" if days_to is not None else "Unknown"
         distance_to_entry_pct = float(actionability.get('distance_metric_pct', 0.0))
@@ -2169,11 +2955,17 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
         plan_tag = ""
         if add_on_trigger > 0 and add_on_qty > 0:
             plan_tag = f" | Plan:{shares}+{add_on_qty}@{add_on_trigger:.2f}"
+        tier_tag = ""
+        if pilot_profile:
+            tier_tag = (
+                f" | Tier:{pilot_profile.get('tier', 'PILOT')}"
+                f" x{pilot_size_scalar:.2f}"
+            )
 
         note = (
             f"N={res['trades']} | Net:{res['win_rate']:.0f}%/{res['pf']:.2f} | {stat_conf['grade']} | {trend['trend_grade']}"
             f" | Mom:{mom_score:.0f} Acc:{accum_score:.0f} RS:{rs_pct:.0f}"
-            f" | PBS:{pre_breakout_score:.0f}{oos_tag}{wf_tag}{regime_tag}{robust_tag}{ready_tag}{plan_tag}"
+            f" | PBS:{pre_breakout_score:.0f} | Val:{validation_tag}{oos_tag}{wf_tag}{regime_tag}{robust_tag}{ready_tag}{plan_tag}{tier_tag}"
         )
 
         setup = TitanSetup(
@@ -2217,10 +3009,13 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             oos_trades=int(oos_trades),
             net_expectancy=res.get('expectancy', 0.0),
             distance_to_entry_pct=distance_to_entry_pct,
+            opportunity_tier=pilot_profile.get('tier', 'VALIDATED') if pilot_profile else 'VALIDATED',
+            execution_eligible=not bool(pilot_profile),
+            position_size_scalar=pilot_size_scalar,
         )
         setup.distance_from_high_pct = distance_from_high_pct
         setup.distance_to_pivot_pct = float(prebreakout_plan.get('dist_to_pivot_pct', 0.0))
-        setup.sector_aligned = False
+        setup.sector_aligned = sector_aligned
         setup.confirmation_status = confirmation_status
         setup.entry_ready_score = entry_ready_score
 
@@ -2318,8 +3113,15 @@ def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS, 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
-                process_ticker, t, data, mkt_status, spy_close, settings,
-                spy_df=spy_df, all_stock_returns=all_stock_returns
+                process_ticker,
+                t,
+                data,
+                mkt_status,
+                spy_close,
+                settings,
+                spy_df=spy_df,
+                all_stock_returns=all_stock_returns,
+                top_sectors=top_sectors,
             ): t
             for t in tickers
         }
@@ -2393,8 +3195,8 @@ def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS, 
         results = filtered
 
     watchlist = []
-    if not results:
-        print("  Building watchlist candidates...")
+    if should_build_watchlist(results, settings):
+        print("  Building research watchlist candidates...")
         watchlist = build_watchlist_candidates(
             tickers,
             data,
@@ -2412,6 +3214,48 @@ def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS, 
     }, vix_level
 
 
+def build_arg_parser():
+    """Create the CLI parser so argument validation can be tested."""
+    parser = argparse.ArgumentParser(description="Titan Trade v9.0 - Manual-First Stock Scanner")
+    parser.add_argument("--trust-mode", action="store_true", help="Enable Trust Mode")
+    parser.add_argument("--trust-status", action="store_true", help="Show Trust Mode status")
+    parser.add_argument("--trust-paper", action="store_true", help="Start paper trading")
+    parser.add_argument("--trust-paper-win", action="store_true", help="Record paper win")
+    parser.add_argument("--trust-paper-loss", action="store_true", help="Record paper loss")
+    parser.add_argument("--trust-bypass", action="store_true", help="Bypass paper validation")
+    parser.add_argument(
+        "--execute-orders",
+        action="store_true",
+        help="Route Alpaca orders in paper mode by default; add --live-orders for live routing",
+    )
+    parser.add_argument(
+        "--live-orders",
+        action="store_true",
+        help="Route orders to the live Alpaca account (requires --trust-mode --execute-orders)",
+    )
+    parser.add_argument("--tickers", default="", help="Custom ticker list")
+    parser.add_argument("--account-size", type=float, default=None)
+    parser.add_argument("--risk-per-trade", type=float, default=None)
+    return parser
+
+
+def validate_cli_args(parser, args):
+    """Reject ambiguous or unsafe execution mode combinations."""
+    if getattr(args, "live_orders", False) and not getattr(args, "execute_orders", False):
+        parser.error("--live-orders requires --execute-orders")
+    if getattr(args, "live_orders", False) and not getattr(args, "trust_mode", False):
+        parser.error("--live-orders requires --trust-mode")
+    if getattr(args, "live_orders", False) and getattr(args, "trust_paper", False):
+        parser.error("--live-orders cannot be combined with --trust-paper")
+
+
+def build_broker_executor(execution_enabled, live_orders=False):
+    """Create the broker adapter with an explicit paper/live selection."""
+    if not execution_enabled:
+        return None
+    return AlpacaExecutor(use_paper=not live_orders)
+
+
 def main():
     """Main entry point."""
     import time
@@ -2420,19 +3264,9 @@ def main():
     no_args = len(sys.argv) == 1
     
     # Parse arguments
-    parser = argparse.ArgumentParser(description="Titan Trade v9.0 - Manual-First Stock Scanner")
-    parser.add_argument("--trust-mode", action="store_true", help="Enable Trust Mode")
-    parser.add_argument("--trust-status", action="store_true", help="Show Trust Mode status")
-    parser.add_argument("--trust-paper", action="store_true", help="Start paper trading")
-    parser.add_argument("--trust-paper-win", action="store_true", help="Record paper win")
-    parser.add_argument("--trust-paper-loss", action="store_true", help="Record paper loss")
-    parser.add_argument("--trust-bypass", action="store_true", help="Bypass paper validation")
-    parser.add_argument("--execute-orders", action="store_true", help="Actually route Alpaca orders in trust mode")
-    parser.add_argument("--tickers", default="", help="Custom ticker list")
-    parser.add_argument("--account-size", type=float, default=None)
-    parser.add_argument("--risk-per-trade", type=float, default=None)
-    
+    parser = build_arg_parser()
     args = parser.parse_args()
+    validate_cli_args(parser, args)
     
     # Initialize
     logger = setup_logging()
@@ -2488,7 +3322,7 @@ def main():
         print("\n" + "=" * 60)
         print("  TITAN TRADE v9.0 - MANUAL SCAN")
         print("=" * 60)
-        print("  Manual mode only. No broker orders will be sent unless --execute-orders is used with trust mode.")
+        print("  Manual mode only. No broker orders will be sent unless trust mode uses --execute-orders.")
     
     # Parse custom tickers
     tickers = parse_tickers(args.tickers) if args.tickers else None
@@ -2500,11 +3334,13 @@ def main():
         if data_universe is not None and managed_portfolio:
             data_universe = list(dict.fromkeys(data_universe + list(managed_portfolio.keys())))
 
-    executor = AlpacaExecutor() if execution_enabled else None
+    executor = build_broker_executor(execution_enabled, live_orders=args.live_orders)
     market_data_bundle = None
     management_actions = []
 
     if execution_enabled:
+        route_mode = "LIVE" if args.live_orders else "PAPER"
+        print(f"\n  Broker routing enabled: {route_mode} Alpaca")
         market_data_bundle = get_market_data(
             data_universe,
             cache_ttl_hours=settings.get('cache_ttl_hours', DEFAULT_OHLCV_TTL_HOURS),
@@ -2556,7 +3392,8 @@ def main():
         if trusted:
             if not args.execute_orders:
                 print("\n  Manual trust mode only. No Alpaca orders were sent.")
-                print("  Use --execute-orders only after you have reviewed the levels and want broker routing.")
+                print("  Use --execute-orders for paper routing only after you have reviewed the levels.")
+                print("  Add --live-orders only if you intentionally want live broker routing.")
             else:
                 trusted, skipped = filter_execution_candidates(trusted, settings)
                 if skipped:
@@ -2667,19 +3504,41 @@ def main():
                         for s in trusted[:int(settings.get('max_new_orders_per_run', AUTO_TRACK_TOP_N))]:
                             signal_tracker.add_signal(s, s.price)
     else:
+        watchlist = mkt_data.get('watchlist', [])
+        opportunity = build_scan_opportunity_summary(
+            setups,
+            watchlist,
+            mkt_data.get('mkt_status', 'Unknown'),
+            vix_level=vix_level,
+        )
+        print(f"\n  Opportunity State: {opportunity['state']}")
+        print(f"  {opportunity['headline']}")
+        if opportunity.get('detail'):
+            print(f"  {opportunity['detail']}")
         if setups:
             print(f"\n  Found {len(setups)} setups:")
             if mkt_data.get('top_sectors'):
                 print(f"  Preferred sectors: {', '.join(mkt_data['top_sectors'])}")
             print_manual_trade_board(setups, settings, top_sectors=mkt_data.get('top_sectors'))
+            if watchlist:
+                print("\n  Additional research names are technically interesting but are not action-ready buy-now setups.")
+                print_watchlist_board(
+                    watchlist,
+                    top_sectors=mkt_data.get('top_sectors'),
+                    title="Research Watchlist",
+                    footer="Research names are secondary stalk ideas only. They are not action-ready trades.",
+                )
         else:
-            print("\n  No valid setups found.")
-            watchlist = mkt_data.get('watchlist', [])
+            print("\n  No fully action-ready setups found.")
             if watchlist:
                 if mkt_data.get('top_sectors'):
                     print(f"  Preferred sectors: {', '.join(mkt_data['top_sectors'])}")
-                print("  Showing strongest names to stalk while the market is still weak.")
-                print_watchlist_board(watchlist, top_sectors=mkt_data.get('top_sectors'))
+                print("  Showing research-only names to stalk while the validated bucket is empty.")
+                print_watchlist_board(
+                    watchlist,
+                    top_sectors=mkt_data.get('top_sectors'),
+                    title="Research Watchlist",
+                )
     
     # Show filter stats
     print("\n  Filter Summary:")
@@ -2691,54 +3550,14 @@ def main():
     print("\n  Exporting results for Web Dashboard...")
     try:
         os.makedirs("data", exist_ok=True)
-        export_data = {
-            "timestamp": datetime.now().isoformat(),
-            "market_status": mkt_data.get("mkt_status", "Unknown"),
-            "top_sectors": mkt_data.get("top_sectors", []),
-            "vix_level": round(vix_level, 2) if vix_level else None,
-            "passed_count": stats.get('Passed', 0),
-            "watchlist_count": len(mkt_data.get("watchlist", [])),
-            "watchlist": mkt_data.get("watchlist", []),
-            "total_scanned": stats.get('Total', 0),
-            "setups": [
-                {
-                    "ticker": s.ticker,
-                    "strategy": s.strategy,
-                    "price": round(s.price, 2),
-                    "trigger": round(s.trigger, 2),
-                    "target": round(s.target, 2),
-                    "stop": round(s.stop, 2),
-                    "confidence_grade": s.confidence_grade,
-                    "action": manual_action_label(s),
-                    "sector": s.sector,
-                    "sector_aligned": bool(getattr(s, 'sector_aligned', False)),
-                    "win_rate": round(s.win_rate, 1),
-                    "profit_factor": round(s.profit_factor, 2),
-                    "momentum_score": round(s.momentum_score, 1),
-                    "rs_percentile": round(s.rs_percentile, 1),
-                    "pre_breakout_score": round(getattr(s, 'pre_breakout_score', 0.0), 1),
-                    "robustness_score": round(getattr(s, 'robustness_score', 0.0), 1),
-                    "walk_forward_pass_rate": round(getattr(s, 'walk_forward_pass_rate', 0.0), 3),
-                    "walk_forward_pf": round(getattr(s, 'walk_forward_pf', 0.0), 2),
-                    "walk_forward_trades": int(getattr(s, 'walk_forward_trades', 0)),
-                    "regime_score": round(getattr(s, 'regime_score', 0.0), 3),
-                    "oos_pf": round(getattr(s, 'oos_pf', 0.0), 2),
-                    "oos_trades": int(getattr(s, 'oos_trades', 0)),
-                    "net_expectancy": round(getattr(s, 'net_expectancy', 0.0), 5),
-                    "distance_from_high_pct": round(getattr(s, 'distance_from_high_pct', 0.0), 2),
-                    "distance_to_entry_pct": round(getattr(s, 'distance_to_entry_pct', 0.0), 2),
-                    "confirmation_status": getattr(s, 'confirmation_status', 'WATCH'),
-                    "entry_ready_score": round(getattr(s, 'entry_ready_score', 0.0), 1),
-                    "distance_to_pivot_pct": round(getattr(s, 'distance_to_pivot_pct', 0.0), 2),
-                    "starter_trigger": round(getattr(s, 'starter_trigger', s.trigger), 2),
-                    "add_on_trigger": round(getattr(s, 'add_on_trigger', 0.0), 2),
-                    "partial_target": round(getattr(s, 'partial_target', 0.0), 2),
-                    "starter_qty": int(s.qty),
-                    "planned_total_qty": int(getattr(s, 'planned_total_qty', s.qty)),
-                    "add_on_qty": int(getattr(s, 'add_on_qty', 0))
-                } for s in setups
-            ]
-        }
+        export_data = build_scan_export_data(
+            setups,
+            stats,
+            mkt_data,
+            vix_level=vix_level,
+            timestamp=datetime.now().isoformat(),
+            action_labeler=manual_action_label,
+        )
         with open("data/latest_scan.json", "w") as f:
             json.dump(export_data, f, indent=4)
         print("    Saved to data/latest_scan.json")

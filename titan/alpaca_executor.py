@@ -14,15 +14,34 @@ except ImportError:
 
 logger = logging.getLogger("titan")
 
+_TRUTHY = {"1", "true", "yes", "on"}
+_FALSY = {"0", "false", "no", "off"}
+
+
+def _coerce_bool(value, default):
+    """Parse bool-like values from CLI/env inputs."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in _TRUTHY:
+        return True
+    if text in _FALSY:
+        return False
+    return default
+
 class AlpacaExecutor:
     """Manages Alpaca API connection and simulated/live order routing."""
     
-    def __init__(self, api_key=None, secret_key=None, use_paper=True):
+    def __init__(self, api_key=None, secret_key=None, use_paper=None):
         self.api_key = api_key or os.environ.get("APCA_API_KEY_ID")
         self.secret_key = secret_key or os.environ.get("APCA_API_SECRET_KEY")
-        self.base_url = "https://paper-api.alpaca.markets" if use_paper else "https://api.alpaca.markets"
+        self.use_paper = self._resolve_use_paper(use_paper)
+        self.base_url = "https://paper-api.alpaca.markets" if self.use_paper else "https://api.alpaca.markets"
         
         self.api = None
+        self.account = None
         self.connected = False
         
         if tradeapi is None:
@@ -43,22 +62,83 @@ class AlpacaExecutor:
             self.account = self.api.get_account()
             if self.account.status == 'ACTIVE':
                 self.connected = True
-                logger.info(f"Connected to Alpaca! Buying Power: ${float(self.account.buying_power):,.2f}")
+                mode = "paper" if self.use_paper else "live"
+                logger.info(
+                    f"Connected to Alpaca ({mode})! Buying Power: ${float(self.account.buying_power):,.2f}"
+                )
             else:
                 logger.warning(f"Alpaca account status is {self.account.status}")
                 
         except Exception as e:
             logger.error(f"Failed to connect to Alpaca API: {e}")
 
+    @staticmethod
+    def _resolve_use_paper(use_paper):
+        """Prefer explicit call-site mode, then env flags, then safe default."""
+        env_default = _coerce_bool(os.environ.get("TITAN_ALPACA_USE_PAPER"), None)
+        if env_default is None:
+            env_default = _coerce_bool(os.environ.get("ALPACA_USE_PAPER"), True)
+        return _coerce_bool(use_paper, env_default)
+
     def is_connected(self):
         return self.connected
+
+    def get_account(self):
+        """Return the latest Alpaca account object, or None on failure."""
+        if not self.connected:
+            return None
+        try:
+            self.account = self.api.get_account()
+            return self.account
+        except Exception as e:
+            logger.error(f"Failed to get account: {e}")
+            return None
+
+    def get_account_summary(self):
+        """Return a normalized account payload for UI/API consumers."""
+        account = self.get_account()
+        if account is None:
+            return None
+        return {
+            "buying_power": float(getattr(account, "buying_power", 0.0) or 0.0),
+            "cash": float(getattr(account, "cash", 0.0) or 0.0),
+            "portfolio_value": float(getattr(account, "portfolio_value", 0.0) or 0.0),
+            "day_trade_count": int(getattr(account, "daytrade_count", 0) or 0),
+            "account_status": str(getattr(account, "status", "UNKNOWN") or "UNKNOWN"),
+            "account_mode": "paper" if self.use_paper else "live",
+        }
+
+    def list_positions(self):
+        """Return raw Alpaca positions, or an empty list on failure."""
+        if not self.connected:
+            return []
+        try:
+            return list(self.api.list_positions())
+        except Exception as e:
+            logger.error(f"Failed to get open positions: {e}")
+            return []
+
+    def get_positions_summary(self):
+        """Return normalized open positions for dashboard/API consumers."""
+        positions = []
+        for pos in self.list_positions():
+            positions.append({
+                "symbol": pos.symbol,
+                "qty": float(getattr(pos, "qty", 0.0) or 0.0),
+                "market_value": float(getattr(pos, "market_value", 0.0) or 0.0),
+                "unrealized_pl": float(getattr(pos, "unrealized_pl", 0.0) or 0.0),
+                "unrealized_plpc": float(getattr(pos, "unrealized_plpc", 0.0) or 0.0) * 100.0,
+                "current_price": float(getattr(pos, "current_price", 0.0) or 0.0),
+                "avg_entry_price": float(getattr(pos, "avg_entry_price", 0.0) or 0.0),
+            })
+        return positions
         
     def get_buying_power(self):
         if not self.connected:
             return 0.0
         try:
-            self.account = self.api.get_account()
-            return float(self.account.buying_power)
+            account = self.get_account()
+            return float(getattr(account, "buying_power", 0.0) or 0.0) if account else 0.0
         except Exception:
             return 0.0
 
@@ -67,8 +147,8 @@ class AlpacaExecutor:
         if not self.connected:
             return 0.0
         try:
-            self.account = self.api.get_account()
-            return float(self.account.equity)
+            account = self.get_account()
+            return float(getattr(account, "equity", 0.0) or 0.0) if account else 0.0
         except Exception:
             return 0.0
 
@@ -78,8 +158,8 @@ class AlpacaExecutor:
         if not self.connected:
             return 0.0
         try:
-            self.account = self.api.get_account()
-            return float(getattr(self.account, 'last_equity', 0.0) or 0.0)
+            account = self.get_account()
+            return float(getattr(account, 'last_equity', 0.0) or 0.0) if account else 0.0
         except Exception:
             return 0.0
     def get_open_order_symbols(self):
@@ -98,7 +178,7 @@ class AlpacaExecutor:
             return {}
         snapshot = {}
         try:
-            for pos in self.api.list_positions():
+            for pos in self.list_positions():
                 qty = abs(int(float(pos.qty)))
                 entry_price = float(pos.avg_entry_price)
                 snapshot[pos.symbol] = {
@@ -226,8 +306,7 @@ class AlpacaExecutor:
         if not self.connected:
             return 0
         try:
-            positions = self.api.list_positions()
-            return len(positions)
+            return len(self.list_positions())
         except Exception as e:
             logger.error(f"Failed to get open positions: {e}")
             return 0
@@ -243,7 +322,7 @@ class AlpacaExecutor:
             
         try:
             # Check if we already have an open position or pending order for this symbol
-            positions = [p.symbol for p in self.api.list_positions()]
+            positions = [p.symbol for p in self.list_positions()]
             if symbol in positions:
                 logger.warning(f"Already hold a position in {symbol}. Skipping redundant order.")
                 return False

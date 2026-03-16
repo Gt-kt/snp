@@ -1,0 +1,997 @@
+﻿commit 6328f0421dc0d668e9408dbda98b2d69b821e615
+Author: Gitae Kim <gitae512@gmail.com>
+Date:   Wed Mar 11 17:56:54 2026 +0900
+
+    new updated
+
+diff --git a/cache_sp500_elite/sp500_ohlcv_bulk.parquet b/cache_sp500_elite/sp500_ohlcv_bulk.parquet
+index 3c0313a..ae04040 100644
+Binary files a/cache_sp500_elite/sp500_ohlcv_bulk.parquet and b/cache_sp500_elite/sp500_ohlcv_bulk.parquet differ
+diff --git a/data/latest_scan.json b/data/latest_scan.json
+index 00668dd..7c02245 100644
+--- a/data/latest_scan.json
++++ b/data/latest_scan.json
+@@ -1,13 +1,220 @@
+ {
+-    "timestamp": "2026-03-09T20:50:32.392583",
+-    "market_status": "Correction+FEAR",
++    "timestamp": "2026-03-11T17:53:23.307980",
++    "market_status": "Correction+CAUTION",
+     "top_sectors": [
+         "Utilities",
+         "Energy",
+         "Real Estate"
+     ],
+-    "vix_level": 32.17,
++    "vix_level": 25.07,
+     "passed_count": 0,
+-    "total_scanned": 0,
++    "watchlist_count": 12,
++    "watchlist": [
++        {
++            "ticker": "EQIX",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 956.07,
++            "trigger": 977.38,
++            "distance_to_entry_pct": 2.23,
++            "sector": "Real Estate",
++            "sector_aligned": true,
++            "rs_percentile": 94.4,
++            "momentum_score": 100.0,
++            "accumulation_score": 70.0,
++            "earnings_call": "Unknown",
++            "score": 115.7,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 100.0
++        },
++        {
++            "ticker": "EXC",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 49.01,
++            "trigger": 49.54,
++            "distance_to_entry_pct": 1.08,
++            "sector": "Utilities",
++            "sector_aligned": true,
++            "rs_percentile": 77.3,
++            "momentum_score": 86.1,
++            "accumulation_score": 86.0,
++            "earnings_call": "Unknown",
++            "score": 112.6,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 100.0
++        },
++        {
++            "ticker": "PNW",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 100.96,
++            "trigger": 103.23,
++            "distance_to_entry_pct": 2.25,
++            "sector": "Utilities",
++            "sector_aligned": true,
++            "rs_percentile": 80.7,
++            "momentum_score": 84.6,
++            "accumulation_score": 78.0,
++            "earnings_call": "Unknown",
++            "score": 110.7,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 100.0
++        },
++        {
++            "ticker": "CVX",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 186.29,
++            "trigger": 192.43,
++            "distance_to_entry_pct": 3.3,
++            "sector": "Energy",
++            "sector_aligned": true,
++            "rs_percentile": 91.3,
++            "momentum_score": 82.8,
++            "accumulation_score": 58.0,
++            "earnings_call": "Unknown",
++            "score": 108.8,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 100.0
++        },
++        {
++            "ticker": "AEP",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 132.31,
++            "trigger": 134.62,
++            "distance_to_entry_pct": 1.75,
++            "sector": "Utilities",
++            "sector_aligned": true,
++            "rs_percentile": 79.9,
++            "momentum_score": 90.2,
++            "accumulation_score": 58.0,
++            "earnings_call": "Unknown",
++            "score": 107.8,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 96.0
++        },
++        {
++            "ticker": "DUK",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 129.69,
++            "trigger": 132.68,
++            "distance_to_entry_pct": 2.31,
++            "sector": "Utilities",
++            "sector_aligned": true,
++            "rs_percentile": 75.1,
++            "momentum_score": 79.3,
++            "accumulation_score": 78.0,
++            "earnings_call": "Unknown",
++            "score": 107.8,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 100.0
++        },
++        {
++            "ticker": "KIM",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 23.16,
++            "trigger": 23.67,
++            "distance_to_entry_pct": 2.2,
++            "sector": "Real Estate",
++            "sector_aligned": true,
++            "rs_percentile": 85.1,
++            "momentum_score": 79.9,
++            "accumulation_score": 58.0,
++            "earnings_call": "Unknown",
++            "score": 107.5,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 100.0
++        },
++        {
++            "ticker": "FE",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 50.66,
++            "trigger": 51.41,
++            "distance_to_entry_pct": 1.48,
++            "sector": "Utilities",
++            "sector_aligned": true,
++            "rs_percentile": 74.0,
++            "momentum_score": 84.9,
++            "accumulation_score": 65.0,
++            "earnings_call": "Unknown",
++            "score": 107.2,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 100.0
++        },
++        {
++            "ticker": "CNP",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 43.16,
++            "trigger": 44.06,
++            "distance_to_entry_pct": 2.09,
++            "sector": "Utilities",
++            "sector_aligned": true,
++            "rs_percentile": 76.1,
++            "momentum_score": 84.2,
++            "accumulation_score": 65.0,
++            "earnings_call": "Unknown",
++            "score": 107.1,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 100.0
++        },
++        {
++            "ticker": "AEE",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 110.39,
++            "trigger": 112.89,
++            "distance_to_entry_pct": 2.26,
++            "sector": "Utilities",
++            "sector_aligned": true,
++            "rs_percentile": 72.0,
++            "momentum_score": 79.4,
++            "accumulation_score": 78.0,
++            "earnings_call": "Unknown",
++            "score": 106.9,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 100.0
++        },
++        {
++            "ticker": "SO",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 96.27,
++            "trigger": 98.1,
++            "distance_to_entry_pct": 1.9,
++            "sector": "Utilities",
++            "sector_aligned": true,
++            "rs_percentile": 74.6,
++            "momentum_score": 78.7,
++            "accumulation_score": 73.0,
++            "earnings_call": "Unknown",
++            "score": 105.8,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 100.0
++        },
++        {
++            "ticker": "PPL",
++            "theme": "BREAKOUT",
++            "status": "HOT",
++            "price": 37.84,
++            "trigger": 38.82,
++            "distance_to_entry_pct": 2.59,
++            "sector": "Utilities",
++            "sector_aligned": true,
++            "rs_percentile": 74.2,
++            "momentum_score": 78.7,
++            "accumulation_score": 70.0,
++            "earnings_call": "Unknown",
++            "score": 105.7,
++            "why": "Strong breakout structure",
++            "pre_breakout_score": 100.0
++        }
++    ],
++    "total_scanned": 503,
+     "setups": []
+ }
+\ No newline at end of file
+diff --git a/titan/alpaca_executor.py b/titan/alpaca_executor.py
+index 9b45d18..20e8b09 100644
+--- a/titan/alpaca_executor.py
++++ b/titan/alpaca_executor.py
+@@ -6,8 +6,11 @@ Handles connection and order execution using the Alpaca Trade API.
+ 
+ import os
+ import logging
+-import alpaca_trade_api as tradeapi
+-from alpaca_trade_api.rest import TimeFrame
++
++try:
++    import alpaca_trade_api as tradeapi
++except ImportError:
++    tradeapi = None
+ 
+ logger = logging.getLogger("titan")
+ 
+@@ -22,6 +25,10 @@ class AlpacaExecutor:
+         self.api = None
+         self.connected = False
+         
++        if tradeapi is None:
++            logger.warning("alpaca_trade_api is not installed. Alpaca execution is disabled.")
++            return
++        
+         if not self.api_key or not self.secret_key:
+             logger.warning("Alpaca API keys not found in environment variables.")
+             return
+diff --git a/titan/models.py b/titan/models.py
+index c0ba18e..43a5425 100644
+--- a/titan/models.py
++++ b/titan/models.py
+@@ -49,6 +49,9 @@ class TitanSetup:
+     oos_pf: float = 0.0
+     oos_trades: int = 0
+     net_expectancy: float = 0.0
++    distance_to_entry_pct: float = 0.0
++    confirmation_status: str = "WATCH"
++    entry_ready_score: float = 0.0
+ 
+ 
+ class RejectionTracker:
+@@ -74,6 +77,9 @@ class RejectionTracker:
+             "WF Filter": 0,
+             "OOS Filter": 0,
+             "Not Near High": 0,
++            "Extended Above Entry": 0,
++            "Too Far From Entry": 0,
++            "Unconfirmed Setup": 0,
+             "Error": 0,
+             "Passed": 0
+         }
+diff --git a/titan_trade_v3.py b/titan_trade_v3.py
+index c64d1a4..8e90657 100644
+--- a/titan_trade_v3.py
++++ b/titan_trade_v3.py
+@@ -137,6 +137,8 @@ def build_runtime_settings(args, auto_manager, logger):
+     settings["account_size"] = account_size
+     settings["risk_per_trade"] = runtime_risk
+     settings["max_risk_pct_per_trade"] = max_risk_pct
++    settings["data_period"] = str(settings.get("data_period", DEFAULT_DATA_PERIOD))
++    settings["data_interval"] = str(settings.get("data_interval", DEFAULT_DATA_INTERVAL))
+     settings["cache_ttl_hours"] = float(settings.get("cache_ttl_hours", DEFAULT_OHLCV_TTL_HOURS))
+     settings["sp500_ttl_days"] = float(settings.get("sp500_ttl_days", DEFAULT_SP500_TTL_DAYS))
+     settings["force_refresh_cache"] = bool(settings.get("force_refresh_cache", False))
+@@ -219,6 +221,36 @@ def build_runtime_settings(args, auto_manager, logger):
+         3.0, float(settings.get("breakout_high_proximity_pct", 12.0))
+     )
+     settings["manual_top_n"] = max(5, int(settings.get("manual_top_n", 12)))
++    default_scan_limit = (
++        settings["max_live_positions"]
++        if (args.trust_mode or args.trust_paper)
++        else max(settings["manual_top_n"], 18)
++    )
++    default_scan_sector_cap = (
++        MAX_SECTOR_EXPOSURE
++        if (args.trust_mode or args.trust_paper)
++        else max(MAX_SECTOR_EXPOSURE, min(settings["manual_top_n"], 5))
++    )
++    settings["max_scan_results"] = max(
++        int(settings.get("max_scan_results", default_scan_limit)),
++        settings["manual_top_n"],
++    )
++    settings["scan_max_sector_exposure"] = max(
++        1, int(settings.get("scan_max_sector_exposure", default_scan_sector_cap))
++    )
++    settings["max_breakout_chase_pct"] = min(
++        max(float(settings.get("max_breakout_chase_pct", 2.5)), 0.5), 10.0
++    )
++    settings["max_breakout_wait_pct"] = min(
++        max(
++            float(settings.get("max_breakout_wait_pct", min(settings.get("prebreakout_max_distance_pct", 4.0), 3.5))),
++            0.5,
++        ),
++        8.0,
++    )
++    settings["max_dip_extension_pct"] = min(
++        max(float(settings.get("max_dip_extension_pct", 2.5)), 0.5), 6.0
++    )
+     settings["validation_cost_bps"] = max(0.0, float(settings.get("validation_cost_bps", 10.0)))
+     settings["validation_slippage_bps"] = max(0.0, float(settings.get("validation_slippage_bps", 5.0)))
+     settings["require_walkforward"] = bool(settings.get("require_walkforward", True) or not (args.trust_mode or args.trust_paper))
+@@ -262,6 +294,16 @@ def print_runtime_summary(settings, trust_mode=False):
+         f"    Sector Filter: Top {settings.get('top_sectors_to_trade', TOP_SECTORS_TO_TRADE)} | "
+         f"Near High <= {settings.get('breakout_high_proximity_pct', 12.0):.0f}%"
+     )
++    print(
++        f"    Data: {settings.get('data_period', DEFAULT_DATA_PERIOD)} / {settings.get('data_interval', DEFAULT_DATA_INTERVAL)} | "
++        f"Scan Cap: {settings.get('max_scan_results', MAX_POSITIONS)} | "
++        f"Sector Cap: {settings.get('scan_max_sector_exposure', MAX_SECTOR_EXPOSURE)}"
++    )
++    print(
++        f"    Breakout Wait <= {settings.get('max_breakout_wait_pct', 3.5):.1f}% | "
++        f"Dip Extension <= {settings.get('max_dip_extension_pct', 2.5):.1f}% | "
++        f"Confirmed Only: {str(bool(settings.get('require_confirmed_setup', True))).upper()}"
++    )
+     print(
+         f"    WF Required: {'YES' if settings.get('require_walkforward') else 'NO'} | "
+         f"Robustness >= {settings.get('min_robustness_score', 55.0):.0f} | "
+@@ -281,11 +323,13 @@ def manual_strategy_priority(setup):
+ 
+ def manual_action_label(setup):
+     """Create a plain-English action label for discretionary trading."""
+-    if getattr(setup, 'strategy', '') == 'EARLY BO':
+-        return 'BUY STARTER'
+-    if getattr(setup, 'strategy', '') == 'BREAKOUT':
+-        return 'BUY BO'
+-    return 'BUY SUPPORT'
++    strategy = getattr(setup, 'strategy', '')
++    ready = getattr(setup, 'confirmation_status', 'READY') == 'READY'
++    if strategy == 'EARLY BO':
++        return 'BUY STARTER' if ready else 'WATCH START'
++    if strategy == 'BREAKOUT':
++        return 'BUY BO' if ready else 'WATCH BO'
++    return 'BUY SUPPORT' if ready else 'WATCH DIP'
+ 
+ 
+ def print_manual_trade_board(setups, settings, top_sectors=None):
+@@ -304,6 +348,7 @@ def print_manual_trade_board(setups, settings, top_sectors=None):
+             add_on = f"${s.add_on_trigger:.2f}"
+         sector_tag = 'TOP' if top_sectors and getattr(s, 'sector', '') in top_sectors else '-'
+         targets = f"${getattr(s, 'partial_target', s.target):.2f}/${s.target:.2f}"
++        dist_pct = float(getattr(s, 'distance_to_entry_pct', 0.0))
+         oos_tag = '-'
+         if getattr(s, 'oos_trades', 0) > 0:
+             oos_tag = f"{getattr(s, 'oos_pf', 0.0):.2f}/{int(getattr(s, 'oos_trades', 0))}"
+@@ -315,12 +360,15 @@ def print_manual_trade_board(setups, settings, top_sectors=None):
+             manual_action_label(s),
+             s.confidence_grade,
+             sector_tag,
++            f"${s.price:.2f}",
+             f"${s.trigger:.2f}",
++            f"{dist_pct:+.1f}%",
+             add_on,
+             f"${s.stop:.2f}",
+             targets,
+             int(getattr(s, 'planned_total_qty', s.qty) or s.qty),
+             f"{s.rs_percentile:.0f}",
++            getattr(s, 'earnings_call', 'Unknown'),
+             oos_tag,
+             wf_tag,
+             f"{getattr(s, 'regime_score', 0.0) * 100:.0f}%",
+@@ -330,12 +378,50 @@ def print_manual_trade_board(setups, settings, top_sectors=None):
+     print(tabulate(
+         table,
+         headers=[
+-            'Ticker', 'Action', 'Grade', 'Top?', 'Entry', 'Add',
+-            'Stop', 'PT1/TGT', 'Qty', 'RS', 'OOS', 'WF', 'Reg', 'Rob'
++            'Ticker', 'Action', 'Grade', 'Top?', 'Now', 'Entry', 'Dist',
++            'Add', 'Stop', 'PT1/TGT', 'Qty', 'RS', 'Earn', 'OOS', 'WF', 'Reg', 'Rob'
++        ],
++        tablefmt='grid'
++    ))
++    print("\n  Dist = breakout gap to trigger, early-entry gap to pivot, or dip distance above the 50-day support area.")
++    print("  OOS = net PF / trades, WF = net PF / pass rate.")
++
++
++def print_watchlist_board(watchlist, top_sectors=None):
++    """Print a stalking list for strong names that are not buy-ready yet."""
++    if not watchlist:
++        return
++
++    top_sectors = top_sectors or []
++
++    print("\n  Watchlist Candidates:\n")
++    table = []
++    for item in watchlist:
++        sector_tag = 'TOP' if top_sectors and item.get('sector', '') in top_sectors else '-'
++        table.append([
++            item.get('ticker', ''),
++            item.get('theme', ''),
++            item.get('status', 'WATCH'),
++            sector_tag,
++            f"${item.get('price', 0.0):.2f}",
++            f"${item.get('trigger', 0.0):.2f}",
++            f"{item.get('distance_to_entry_pct', 0.0):+.1f}%",
++            f"{item.get('rs_percentile', 0.0):.0f}",
++            f"{item.get('momentum_score', 0.0):.0f}",
++            f"{item.get('accumulation_score', 0.0):.0f}",
++            item.get('earnings_call', 'Unknown'),
++            item.get('why', ''),
++        ])
++
++    print(tabulate(
++        table,
++        headers=[
++            'Ticker', 'Theme', 'Status', 'Top?', 'Now', 'Trigger', 'Dist',
++            'RS', 'Mom', 'Acc', 'Earn', 'Why'
+         ],
+         tablefmt='grid'
+     ))
+-    print("\n  OOS = net PF / trades, WF = net PF / pass rate. Skip anything that gaps or extends materially above the planned entry.")
++    print("\n  Watchlist names are stalk candidates only. Wait for confirmation before buying.")
+ 
+ def apply_validation_costs(trades, settings):
+     """Apply a flat round-trip cost model to historical trades."""
+@@ -820,6 +906,287 @@ def analyze_pre_breakout(df, validator, current_price, atr_value, sma50, sma200,
+         'early_entry_ready': early_entry_ready,
+     }
+ 
++def assess_setup_actionability(df, strategy_name, current_price, trigger, sma50, atr_value, settings, reference_trigger=None):
++    """Measure whether a setup is fresh and confirmed enough for manual action."""
++    reference_trigger = float(reference_trigger or trigger or current_price)
++    current_price = float(current_price or 0.0)
++    sma50 = float(sma50 or 0.0)
++    atr_value = max(float(atr_value or 0.0), 0.01)
++    confirm_key = 'confirm_days_breakout' if strategy_name in ('BREAKOUT', 'EARLY BO') else 'confirm_days_dip'
++    confirm_days = max(1, int(settings.get(confirm_key, 2)))
++    recent = df.iloc[-confirm_days:].copy()
++    atr_pct = (atr_value / max(current_price, 1e-9)) * 100.0
++    result = {
++        'confirmed': False,
++        'actionable': True,
++        'score': 0.0,
++        'status': 'WATCH',
++        'reason': 'Needs confirmation',
++        'distance_metric_pct': 0.0,
++    }
++
++    if strategy_name in ('BREAKOUT', 'EARLY BO'):
++        wait_pct = max(reference_trigger - current_price, 0.0) / max(current_price, 1e-9) * 100.0
++        max_wait_pct = float(settings.get('max_breakout_wait_pct', 3.5))
++        base_range_pct = (recent['High'].max() - recent['Low'].min()) / max(current_price, 1e-9) * 100.0
++        closes_above_support = bool((recent['Close'] >= sma50 * 0.99).all())
++        pressing_pivot = bool(recent['High'].max() >= reference_trigger * 0.985 or wait_pct <= 1.0)
++        trend_intact = bool(recent['Close'].iloc[-1] >= recent['Close'].iloc[0] * 0.99)
++        tight_enough = bool(base_range_pct <= max(6.5, atr_pct * (confirm_days + 1.0)))
++        actionable = bool(wait_pct <= max_wait_pct)
++        confirmed = bool(actionable and closes_above_support and pressing_pivot and tight_enough)
++        score = 0.0
++        if actionable:
++            if wait_pct <= 1.0:
++                score += 8
++            elif wait_pct <= 2.0:
++                score += 6
++            else:
++                score += 3
++        if closes_above_support:
++            score += 6
++        if pressing_pivot:
++            score += 5
++        if tight_enough:
++            score += 5
++        if trend_intact:
++            score += 3
++        if not actionable:
++            reason = f'Entry wait {wait_pct:.1f}% > {max_wait_pct:.1f}%'
++            status = 'LATE'
++        elif not closes_above_support:
++            reason = 'Recent closes lost 50-day support'
++            status = 'WATCH'
++        elif not pressing_pivot:
++            reason = 'Price is not pressing the breakout pivot'
++            status = 'WATCH'
++        elif not tight_enough:
++            reason = 'Base is too loose over the confirmation window'
++            status = 'WATCH'
++        else:
++            reason = 'Breakout structure confirmed'
++            status = 'READY'
++        result.update({
++            'confirmed': confirmed,
++            'actionable': actionable,
++            'score': score,
++            'status': status,
++            'reason': reason,
++            'distance_metric_pct': wait_pct,
++        })
++        return result
++
++    dist_from_sma50_pct = (current_price - sma50) / max(sma50, 1e-9) * 100.0
++    max_extension_pct = float(settings.get('max_dip_extension_pct', 2.5))
++    support_touch = bool(recent['Low'].min() <= sma50 * 1.015)
++    support_held = bool(recent['Close'].min() >= sma50 * 0.985)
++    bounce_quality = bool(recent['Close'].iloc[-1] >= recent['Close'].mean() * 0.995)
++    actionable = bool(dist_from_sma50_pct <= max_extension_pct)
++    confirmed = bool(actionable and support_touch and support_held and bounce_quality)
++    score = 0.0
++    if actionable:
++        if dist_from_sma50_pct <= 1.0:
++            score += 8
++        elif dist_from_sma50_pct <= 2.0:
++            score += 6
++        else:
++            score += 3
++    if support_touch:
++        score += 5
++    if support_held:
++        score += 6
++    if bounce_quality:
++        score += 4
++    if not actionable:
++        reason = f'Price is {dist_from_sma50_pct:.1f}% above SMA50 > {max_extension_pct:.1f}%'
++        status = 'LATE'
++    elif not support_touch:
++        reason = 'No fresh touch of 50-day support in confirmation window'
++        status = 'WATCH'
++    elif not support_held:
++        reason = 'Recent closes did not hold support cleanly'
++        status = 'WATCH'
++    elif not bounce_quality:
++        reason = 'Bounce quality is weak'
++        status = 'WATCH'
++    else:
++        reason = 'Dip support confirmed'
++        status = 'READY'
++    result.update({
++        'confirmed': confirmed,
++        'actionable': actionable,
++        'score': score,
++        'status': status,
++        'reason': reason,
++        'distance_metric_pct': dist_from_sma50_pct,
++    })
++    return result
++
++
++
++def build_watchlist_candidates(tickers, data, settings, top_sectors=None, spy_df=None, all_stock_returns=None):
++    """Build a stalking list of strong names when no clean buy setups exist."""
++    if not isinstance(data.columns, pd.MultiIndex):
++        return []
++
++    preferred_sectors = set(top_sectors or [])
++    watch_limit = max(int(settings.get('watchlist_top_n', settings.get('manual_top_n', 12))), 5)
++    watchlist = []
++
++    for ticker in tickers:
++        try:
++            if ticker not in data.columns.levels[0]:
++                continue
++            df = data[ticker].dropna()
++            if df is None or df.empty or len(df) < 220:
++                continue
++
++            liquid, _, _ = DataValidator.check_liquidity(df)
++            if not liquid:
++                continue
++
++            c = float(df['Close'].iloc[-1])
++            if not np.isfinite(c) or c < 10:
++                continue
++
++            sma50 = float(df['Close'].rolling(50).mean().iloc[-1])
++            sma200 = float(df['Close'].rolling(200).mean().iloc[-1])
++            atr = float(atr_series(df).iloc[-1])
++            if not np.isfinite([sma50, sma200, atr]).all() or atr <= 0:
++                continue
++            if c < sma200 * 0.98:
++                continue
++
++            validator = StrategyValidator(df)
++            if GAP_PROTECTION and not validator.check_gap_risk():
++                continue
++
++            mom_score = float(validator.momentum_composite_score())
++            accum_score = float(validator.volume_accumulation_score())
++            if spy_df is not None and len(spy_df) > 0:
++                rs_pct = float(validator.rs_percentile_rank(spy_df, all_returns=all_stock_returns, lookback=63))
++            else:
++                rs_pct = 50.0
++
++            if rs_pct < 70 and mom_score < 60 and accum_score < 55:
++                continue
++
++            sector = SectorMapper.get_sector(ticker)
++            sector_aligned = bool(preferred_sectors) and (sector in preferred_sectors)
++            trailing_high = float(df['High'].iloc[-252:].max())
++            distance_from_high_pct = (
++                max(trailing_high - c, 0.0) / max(trailing_high, 1e-9) * 100.0
++                if trailing_high > 0 else 100.0
++            )
++            dip_distance_pct = ((c - sma50) / max(sma50, 1e-9)) * 100.0
++
++            breakout_candidate = bool(
++                c > sma50 > sma200
++                and distance_from_high_pct <= max(float(settings.get('breakout_high_proximity_pct', 12.0)) + 4.0, 15.0)
++            )
++            dip_candidate = bool(
++                c > sma200
++                and sma50 >= sma200 * 0.99
++                and -4.0 < dip_distance_pct < 6.0
++            )
++            if not (breakout_candidate or dip_candidate):
++                continue
++
++            pre_breakout_score = 0.0
++            if breakout_candidate:
++                prebreakout_plan = analyze_pre_breakout(
++                    df, validator, c, atr, sma50, sma200, accum_score, mom_score, rs_pct, settings
++                )
++                trigger = round(float(prebreakout_plan.get('pivot_trigger', float(df['High'].iloc[-16:-1].max()) + 0.02)), 2)
++                actionability = assess_setup_actionability(
++                    df, 'BREAKOUT', c, trigger, sma50, atr, settings, reference_trigger=trigger
++                )
++                pre_breakout_score = float(prebreakout_plan.get('score', 0.0))
++                distance_to_entry_pct = float(actionability.get('distance_metric_pct', 0.0))
++                watch_score = (
++                    rs_pct * 0.30 +
++                    mom_score * 0.22 +
++                    accum_score * 0.18 +
++                    pre_breakout_score * 0.18 +
++                    max(0.0, 20.0 - distance_from_high_pct)
++                )
++                if validator.is_blue_sky_breakout():
++                    watch_score += 6
++                if sector_aligned:
++                    watch_score += 6
++                if actionability.get('confirmed', False):
++                    watch_score += 6
++                elif actionability.get('actionable', False):
++                    watch_score += 3
++                max_wait_pct = float(settings.get('max_breakout_wait_pct', 3.5))
++                if distance_to_entry_pct > max_wait_pct:
++                    watch_score -= min(10.0, (distance_to_entry_pct - max_wait_pct) * 2.0)
++                theme = 'BREAKOUT'
++                status = 'HOT' if actionability.get('confirmed', False) else 'WATCH'
++                why = str(actionability.get('reason', 'Near breakout pivot')).replace('Breakout structure confirmed', 'Strong breakout structure')
++            else:
++                trigger = round(max(float(sma50), c), 2)
++                actionability = assess_setup_actionability(
++                    df, 'DIP BUY', c, trigger, sma50, atr, settings, reference_trigger=sma50
++                )
++                distance_to_entry_pct = float(actionability.get('distance_metric_pct', dip_distance_pct))
++                proximity_score = max(0.0, 10.0 - abs(dip_distance_pct) * 2.0) * 2.5
++                watch_score = (
++                    rs_pct * 0.32 +
++                    mom_score * 0.24 +
++                    accum_score * 0.20 +
++                    proximity_score
++                )
++                if sector_aligned:
++                    watch_score += 6
++                if actionability.get('confirmed', False):
++                    watch_score += 4
++                elif actionability.get('actionable', False):
++                    watch_score += 2
++                max_extension_pct = float(settings.get('max_dip_extension_pct', 2.5))
++                if distance_to_entry_pct > max_extension_pct:
++                    watch_score -= min(12.0, (distance_to_entry_pct - max_extension_pct) * 2.5)
++                theme = 'DIP BUY'
++                status = 'HOT' if actionability.get('confirmed', False) else 'WATCH'
++                why = str(actionability.get('reason', 'Pullback needs support hold')).replace('Dip support confirmed', 'Strong support hold')
++
++            if watch_score < 65:
++                continue
++
++            _, days_to = EarningsCalendar.get_earnings_date(ticker)
++            earnings_call = f"{days_to:+d}d" if days_to is not None else 'Unknown'
++            watchlist.append({
++                'ticker': ticker,
++                'theme': theme,
++                'status': status,
++                'price': round(c, 2),
++                'trigger': round(trigger, 2),
++                'distance_to_entry_pct': round(distance_to_entry_pct, 2),
++                'sector': sector,
++                'sector_aligned': sector_aligned,
++                'rs_percentile': round(rs_pct, 1),
++                'momentum_score': round(mom_score, 1),
++                'accumulation_score': round(accum_score, 1),
++                'earnings_call': earnings_call,
++                'score': round(watch_score, 1),
++                'why': why,
++                'pre_breakout_score': round(pre_breakout_score, 1),
++            })
++        except Exception:
++            continue
++
++    watchlist.sort(
++        key=lambda item: (
++            -int(bool(item.get('sector_aligned', False))),
++            -int(item.get('status') == 'HOT'),
++            -float(item.get('score', 0.0)),
++            -float(item.get('rs_percentile', 0.0)),
++            -float(item.get('momentum_score', 0.0)),
++            float(item.get('distance_to_entry_pct', 0.0)),
++        )
++    )
++    return watchlist[:watch_limit]
++
+ def load_managed_portfolio(logger=None):
+     """Load managed positions from disk and normalize legacy entries."""
+     raw = load_json_file(PORTFOLIO_FILE, logger)
+@@ -1118,8 +1485,8 @@ def manage_open_positions(executor, data, settings, logger=None):
+     return portfolio, actions
+ 
+ def get_market_data(tickers_override=None, cache_ttl_hours=DEFAULT_OHLCV_TTL_HOURS,
+-
+-                   sp500_ttl_days=DEFAULT_SP500_TTL_DAYS, force_refresh=False):
++                   sp500_ttl_days=DEFAULT_SP500_TTL_DAYS, force_refresh=False,
++                   data_period=DEFAULT_DATA_PERIOD, data_interval=DEFAULT_DATA_INTERVAL):
+     """Download and cache market data."""
+     
+     # Ensure cache directory exists
+@@ -1194,7 +1561,7 @@ def get_market_data(tickers_override=None, cache_ttl_hours=DEFAULT_OHLCV_TTL_HOU
+             print(f"    Batch {i//chunk_size + 1}...", end='\r')
+             try:
+                 d = yf.download(
+-                    chunk, period=DEFAULT_DATA_PERIOD, interval=DEFAULT_DATA_INTERVAL,
++                    chunk, period=data_period, interval=data_interval,
+                     auto_adjust=True, group_by='ticker', threads=False, progress=False
+                 )
+                 if d is not None and not d.empty:
+@@ -1533,6 +1900,23 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
+                 trigger + ((trigger - stop) * float(settings.get('final_target_multiple', 3.2)))
+             )
+ 
++        if strategy_name == "BREAKOUT":
++            breakout_chase_pct = ((c / trigger) - 1.0) * 100 if trigger > 0 else 0.0
++            max_breakout_chase_pct = float(settings.get('max_breakout_chase_pct', 2.5))
++            if breakout_chase_pct > max_breakout_chase_pct:
++                return None, "Extended Above Entry", (
++                    f"Now {breakout_chase_pct:.1f}% above entry > {max_breakout_chase_pct:.1f}%"
++                )
++
++        reference_trigger = add_on_trigger if (strategy_name == "EARLY BO" and add_on_trigger > 0) else trigger
++        actionability = assess_setup_actionability(
++            df, strategy_name, c, trigger, sma50, atr, settings, reference_trigger=reference_trigger
++        )
++        if not actionability.get('actionable', True):
++            return None, "Too Far From Entry", actionability.get('reason')
++        if settings.get('require_confirmed_setup', True) and not actionability.get('confirmed', False):
++            return None, "Unconfirmed Setup", actionability.get('reason')
++
+         risk_per_share = trigger - stop
+         if risk_per_share <= 0:
+             return None, "Bad Risk/Reward", None
+@@ -1627,7 +2011,7 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
+         if add_on_trigger > 0:
+             add_on_trigger = round(add_on_trigger, 2)
+ 
+-        # Statistical confidence ΓÇö pure backtest quality (no forward signals)
++        # Statistical confidence - pure backtest quality (no forward signals)
+         # Forward-looking signals (momentum/accumulation/RS) are only used
+         # in the composite score for ranking, NOT in the confidence grade.
+         # This prevents double-counting and keeps the grade honest.
+@@ -1642,7 +2026,7 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
+             oos_pf=oos_pf,
+         )
+ 
+-        # Apply OOS penalty ΓÇö downgrade confidence when recent data
++        # Apply OOS penalty - downgrade confidence when recent data
+         # shows the edge is weaker than the full backtest suggests
+         stat_conf['score'] = max(0, stat_conf['score'] - oos_penalty)
+         # Recalculate grade after penalty
+@@ -1715,6 +2099,10 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
+         if early_entry_candidate:
+             score += 10
+ 
++        entry_ready_score = float(actionability.get('score', 0.0))
++        if entry_ready_score > 0:
++            score += min(12, entry_ready_score * 0.5)
++
+         # Robustness bonus - reward ideas that survive harder validation
+         if robustness_score >= 75:
+             score += 12
+@@ -1755,7 +2143,9 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
+         # Get sector and earnings info
+         sector = SectorMapper.get_sector(ticker)
+         earnings_date, days_to = EarningsCalendar.get_earnings_date(ticker)
+-        earnings_call = f"{days_to:+d}d" if days_to else "Unknown"
++        earnings_call = f"{days_to:+d}d" if days_to is not None else "Unknown"
++        distance_to_entry_pct = float(actionability.get('distance_metric_pct', 0.0))
++        confirmation_status = actionability.get('status', 'WATCH')
+ 
+         oos_tag = ""
+         if oos_pf is not None:
+@@ -1774,6 +2164,7 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
+             )
+         regime_tag = f" | Reg:{regime_stats.get('score', 0.0) * 100:.0f}%"
+         robust_tag = f" | Rob:{robustness_score:.0f}"
++        ready_tag = f" | Ready:{confirmation_status}/{entry_ready_score:.0f}"
+ 
+         plan_tag = ""
+         if add_on_trigger > 0 and add_on_qty > 0:
+@@ -1782,7 +2173,7 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
+         note = (
+             f"N={res['trades']} | Net:{res['win_rate']:.0f}%/{res['pf']:.2f} | {stat_conf['grade']} | {trend['trend_grade']}"
+             f" | Mom:{mom_score:.0f} Acc:{accum_score:.0f} RS:{rs_pct:.0f}"
+-            f" | PBS:{pre_breakout_score:.0f}{oos_tag}{wf_tag}{regime_tag}{robust_tag}{plan_tag}"
++            f" | PBS:{pre_breakout_score:.0f}{oos_tag}{wf_tag}{regime_tag}{robust_tag}{ready_tag}{plan_tag}"
+         )
+ 
+         setup = TitanSetup(
+@@ -1825,10 +2216,13 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
+             oos_pf=float(oos_pf or 0.0),
+             oos_trades=int(oos_trades),
+             net_expectancy=res.get('expectancy', 0.0),
++            distance_to_entry_pct=distance_to_entry_pct,
+         )
+         setup.distance_from_high_pct = distance_from_high_pct
+         setup.distance_to_pivot_pct = float(prebreakout_plan.get('dist_to_pivot_pct', 0.0))
+         setup.sector_aligned = False
++        setup.confirmation_status = confirmation_status
++        setup.entry_ready_score = entry_ready_score
+ 
+         return setup, "Passed", None
+ 
+@@ -1857,6 +2251,8 @@ def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS,
+             cache_ttl_hours=settings.get('cache_ttl_hours', DEFAULT_OHLCV_TTL_HOURS),
+             sp500_ttl_days=settings.get('sp500_ttl_days', DEFAULT_SP500_TTL_DAYS),
+             force_refresh=settings.get('force_refresh_cache', False),
++            data_period=settings.get('data_period', DEFAULT_DATA_PERIOD),
++            data_interval=settings.get('data_interval', DEFAULT_DATA_INTERVAL),
+         )
+ 
+     # Get SPY data
+@@ -1894,7 +2290,7 @@ def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS,
+     # Check VIX panic
+     if vix_level and vix_level > VIX_PANIC_THRESHOLD:
+         print(f"\n  VIX PANIC ({vix_level:.1f}) - No trading allowed!")
+-        return [], {}, {"mkt_status": mkt_status, "mkt_score": mkt_score, "top_sectors": top_sectors}, vix_level
++        return [], {}, {"mkt_status": mkt_status, "mkt_score": mkt_score, "top_sectors": top_sectors, "watchlist": []}, vix_level
+ 
+     if mkt_score == 0:
+         print("\n  BEAR MARKET - No new long positions recommended!")
+@@ -1974,6 +2370,7 @@ def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS,
+                 1 if getattr(x, 'sector_aligned', False) else 0,
+                 grade_to_rank(getattr(x, 'confidence_grade', 'F')),
+                 getattr(x, 'robustness_score', 0.0),
++                getattr(x, 'entry_ready_score', 0.0),
+                 manual_strategy_priority(x),
+                 x.score,
+                 getattr(x, 'pre_breakout_score', 0.0),
+@@ -1983,17 +2380,36 @@ def scan(tickers_override=None, settings=None, max_workers=DEFAULT_MAX_WORKERS,
+         )
+         sector_count = {}
+         filtered = []
++        max_scan_results = max(int(settings.get('max_scan_results', MAX_POSITIONS)), 1)
++        scan_sector_cap = max(int(settings.get('scan_max_sector_exposure', MAX_SECTOR_EXPOSURE)), 1)
+         for s in results:
+-            if len(filtered) >= MAX_POSITIONS:
++            if len(filtered) >= max_scan_results:
+                 break
+             sector = s.sector or 'Unknown'
+-            if sector_count.get(sector, 0) >= MAX_SECTOR_EXPOSURE:
++            if sector_count.get(sector, 0) >= scan_sector_cap:
+                 continue
+             sector_count[sector] = sector_count.get(sector, 0) + 1
+             filtered.append(s)
+         results = filtered
+ 
+-    return results, tracker.summary(), {"mkt_status": mkt_status, "mkt_score": mkt_score, "top_sectors": top_sectors}, vix_level
++    watchlist = []
++    if not results:
++        print("  Building watchlist candidates...")
++        watchlist = build_watchlist_candidates(
++            tickers,
++            data,
++            settings,
++            top_sectors=top_sectors,
++            spy_df=spy_df,
++            all_stock_returns=all_stock_returns,
++        )
++
++    return results, tracker.summary(), {
++        "mkt_status": mkt_status,
++        "mkt_score": mkt_score,
++        "top_sectors": top_sectors,
++        "watchlist": watchlist,
++    }, vix_level
+ 
+ 
+ def main():
+@@ -2094,6 +2510,8 @@ def main():
+             cache_ttl_hours=settings.get('cache_ttl_hours', DEFAULT_OHLCV_TTL_HOURS),
+             sp500_ttl_days=settings.get('sp500_ttl_days', DEFAULT_SP500_TTL_DAYS),
+             force_refresh=settings.get('force_refresh_cache', False),
++            data_period=settings.get('data_period', DEFAULT_DATA_PERIOD),
++            data_interval=settings.get('data_interval', DEFAULT_DATA_INTERVAL),
+         )
+         managed_portfolio, management_actions = manage_open_positions(
+             executor, market_data_bundle[1], settings, logger
+@@ -2256,6 +2674,12 @@ def main():
+             print_manual_trade_board(setups, settings, top_sectors=mkt_data.get('top_sectors'))
+         else:
+             print("\n  No valid setups found.")
++            watchlist = mkt_data.get('watchlist', [])
++            if watchlist:
++                if mkt_data.get('top_sectors'):
++                    print(f"  Preferred sectors: {', '.join(mkt_data['top_sectors'])}")
++                print("  Showing strongest names to stalk while the market is still weak.")
++                print_watchlist_board(watchlist, top_sectors=mkt_data.get('top_sectors'))
+     
+     # Show filter stats
+     print("\n  Filter Summary:")
+@@ -2272,8 +2696,10 @@ def main():
+             "market_status": mkt_data.get("mkt_status", "Unknown"),
+             "top_sectors": mkt_data.get("top_sectors", []),
+             "vix_level": round(vix_level, 2) if vix_level else None,
+-            "passed_count": stats.get('passed', 0),
+-            "total_scanned": stats.get('total', 0),
++            "passed_count": stats.get('Passed', 0),
++            "watchlist_count": len(mkt_data.get("watchlist", [])),
++            "watchlist": mkt_data.get("watchlist", []),
++            "total_scanned": stats.get('Total', 0),
+             "setups": [
+                 {
+                     "ticker": s.ticker,
+@@ -2300,6 +2726,9 @@ def main():
+                     "oos_trades": int(getattr(s, 'oos_trades', 0)),
+                     "net_expectancy": round(getattr(s, 'net_expectancy', 0.0), 5),
+                     "distance_from_high_pct": round(getattr(s, 'distance_from_high_pct', 0.0), 2),
++                    "distance_to_entry_pct": round(getattr(s, 'distance_to_entry_pct', 0.0), 2),
++                    "confirmation_status": getattr(s, 'confirmation_status', 'WATCH'),
++                    "entry_ready_score": round(getattr(s, 'entry_ready_score', 0.0), 1),
+                     "distance_to_pivot_pct": round(getattr(s, 'distance_to_pivot_pct', 0.0), 2),
+                     "starter_trigger": round(getattr(s, 'starter_trigger', s.trigger), 2),
+                     "add_on_trigger": round(getattr(s, 'add_on_trigger', 0.0), 2),
+@@ -2316,7 +2745,7 @@ def main():
+     except Exception as e:
+         print(f"    Failed to export JSON: {e}")
+ 
+-    # Survivorship bias warning ΓÇö always shown so users don't over-trust
++    # Survivorship bias warning - always shown so users do not over-trust
+     print("\n  " + "-" * 56)
+     print("  NOTE: Backtests use CURRENT S&P 500 members only.")
+     print("  Stocks removed from the index (often after declines)")
+@@ -2330,3 +2759,4 @@ if __name__ == "__main__":
+ 
+ 
+ 
++
+diff --git a/trust_mode_state.json b/trust_mode_state.json
+index 0e4afc4..23ce3cb 100644
+--- a/trust_mode_state.json
++++ b/trust_mode_state.json
+@@ -1,7 +1,7 @@
+ {
+   "trades_today": [],
+   "trades_this_week": [],
+-  "last_trade_date": "2026-03-09",
++  "last_trade_date": "2026-03-11",
+   "last_week_start": "2026-03-09",
+   "consecutive_losses": 0,
+   "cooloff_until": null,

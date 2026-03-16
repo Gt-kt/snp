@@ -52,6 +52,9 @@ class TitanSetup:
     distance_to_entry_pct: float = 0.0
     confirmation_status: str = "WATCH"
     entry_ready_score: float = 0.0
+    opportunity_tier: str = "VALIDATED"
+    execution_eligible: bool = True
+    position_size_scalar: float = 1.0
 
 
 class RejectionTracker:
@@ -80,6 +83,7 @@ class RejectionTracker:
             "Extended Above Entry": 0,
             "Too Far From Entry": 0,
             "Unconfirmed Setup": 0,
+            "Research Only": 0,
             "Error": 0,
             "Passed": 0
         }
