@@ -255,13 +255,14 @@ def get_precision_filter_rejection(strategy_name, mkt_status, actionability, rob
 
 
 def should_build_watchlist(results, settings):
-    """Decide whether to build the broader momentum watchlist."""
+    """Decide whether to build the broader momentum watchlist.
+
+    v9.5: Always build the watchlist. Stalking candidates are the primary
+    signal for pre-breakout entries, not a fallback for empty scan days.
+    """
     if not settings.get("build_watchlist", True):
         return False
-    if settings.get("always_build_watchlist", False):
-        return True
-    min_count = max(int(settings.get("watchlist_if_fewer_than", 3)), 0)
-    return len(results or []) < min_count
+    return True
 
 
 def evaluate_recent_oos_channel(oos_stats, min_trades, min_pf, min_expectancy):
@@ -558,7 +559,7 @@ def build_runtime_settings(args, auto_manager, logger):
     settings["regime_min_score_breakout"] = min(max(float(settings.get("regime_min_score_breakout", 0.33)), 0.0), 1.0)
     settings["regime_min_score_dip"] = min(max(float(settings.get("regime_min_score_dip", 0.34)), 0.0), 1.0)
     settings["min_robustness_score"] = min(max(float(settings.get("min_robustness_score", 55.0)), 0.0), 100.0)
-    settings["min_early_entry_robustness"] = min(max(float(settings.get("min_early_entry_robustness", 85.0)), 0.0), 100.0)
+    settings["min_early_entry_robustness"] = min(max(float(settings.get("min_early_entry_robustness", 65.0)), 0.0), 100.0)
     settings["enable_leader_breakout_fallback"] = bool(
         settings.get("enable_leader_breakout_fallback", True)
     )
@@ -930,6 +931,94 @@ def print_watchlist_board(watchlist, top_sectors=None, title="Watchlist Candidat
     print(
         f"\n  {footer or 'Research watchlist names are not buy-ready. They bypass full validation and require fresh review before any trade.'}"
     )
+
+
+def generate_stalk_orders(stalk_candidates, settings):
+    """Generate bracket order plans from STALK watchlist candidates.
+
+    Returns a list of order dicts ready for Alpaca submission:
+      {symbol, qty, pivot_price, stop_price, target_price, risk_dollars}
+
+    This is the v9.5 "place limit order and sleep" workflow.
+    """
+    if not stalk_candidates:
+        return []
+
+    account_size = max(float(settings.get('account_size', ACCOUNT_SIZE)), 1.0)
+    risk_per_trade = min(
+        float(settings.get('risk_per_trade', RISK_PER_TRADE)),
+        account_size * (float(settings.get('max_risk_pct_per_trade', MAX_RISK_PCT_PER_TRADE)) / 100.0),
+    )
+
+    orders = []
+    for item in stalk_candidates:
+        if item.get('status') != 'STALK':
+            continue
+
+        trigger = float(item.get('trigger', 0.0))
+        price = float(item.get('price', 0.0))
+        if trigger <= 0 or price <= 0:
+            continue
+
+        # ATR estimate from distance to trigger (rough but usable)
+        dist_pct = abs(float(item.get('distance_to_entry_pct', 0.0)))
+        est_atr = max(trigger * 0.02, abs(trigger - price) * 1.5) if dist_pct > 0 else trigger * 0.02
+
+        stop_price = round(trigger - (est_atr * 2.0), 2)
+        target_price = round(trigger + (est_atr * 3.0), 2)
+        risk_per_share = trigger - stop_price
+
+        if risk_per_share <= 0:
+            continue
+
+        qty = max(1, int(risk_per_trade / risk_per_share))
+
+        # Cap at 12% of account per position
+        max_alloc = account_size * (float(settings.get('max_alloc_pct_per_position', 12.0)) / 100.0)
+        max_shares = int(max_alloc / trigger) if trigger > 0 else 0
+        if max_shares > 0:
+            qty = min(qty, max_shares)
+
+        orders.append({
+            'symbol': item['ticker'],
+            'qty': qty,
+            'pivot_price': trigger,
+            'stop_price': stop_price,
+            'target_price': target_price,
+            'risk_dollars': round(risk_per_share * qty, 2),
+            'risk_pct': round((risk_per_share * qty) / account_size * 100, 2),
+            'sector': item.get('sector', ''),
+            'score': item.get('score', 0),
+            'rs_percentile': item.get('rs_percentile', 0),
+            'momentum_score': item.get('momentum_score', 0),
+        })
+
+    return orders
+
+
+def print_stalk_orders(orders):
+    """Print the nightly stalk order plan — what to place before sleeping."""
+    if not orders:
+        return
+
+    print(f"\n  {'='*60}")
+    print(f"  LIMIT ORDERS TO PLACE TONIGHT ({len(orders)} signals)")
+    print(f"  Place these as GTC bracket orders and go to sleep.")
+    print(f"  {'='*60}")
+
+    for i, o in enumerate(orders, 1):
+        rr = (o['target_price'] - o['pivot_price']) / max(o['pivot_price'] - o['stop_price'], 0.01)
+        print(f"\n  #{i}  {o['symbol']}  |  Score: {o['score']}  |  RS: {o['rs_percentile']:.0f}")
+        print(f"      LIMIT BUY:  ${o['pivot_price']:.2f}  (pivot)")
+        print(f"      STOP LOSS:  ${o['stop_price']:.2f}")
+        print(f"      TARGET:     ${o['target_price']:.2f}  ({rr:.1f}R)")
+        print(f"      Shares: {o['qty']}  |  Risk: ${o['risk_dollars']:.0f} ({o['risk_pct']:.2f}%)")
+
+    print(f"\n  {'='*60}")
+    print(f"  These are GTC orders. They stay open until filled or cancelled.")
+    print(f"  Review and cancel stale orders every 3 days.")
+    print(f"  {'='*60}")
+
 
 def apply_validation_costs(trades, settings):
     """Apply a flat round-trip cost model to historical trades."""
@@ -1426,11 +1515,11 @@ def analyze_pre_breakout(df, validator, current_price, atr_value, sma50, sma200,
         current_price > sma50 > sma200,
         current_price >= ema21 * 0.99,
         dist_to_pivot_pct <= settings.get('prebreakout_max_distance_pct', 4.0),
-        range_10 <= 0.09,
-        compression_ratio <= 0.80,
-        rs_pct >= max(60.0, float(settings.get('min_rs_percentile', 0))),
-        accum_score >= max(45.0, float(settings.get('min_accumulation_score', 0))),
-        score >= float(settings.get('min_prebreakout_score', 55.0)),
+        range_10 <= 0.11,
+        compression_ratio <= 0.85,
+        rs_pct >= max(55.0, float(settings.get('min_rs_percentile', 0))),
+        accum_score >= max(35.0, float(settings.get('min_accumulation_score', 0))),
+        score >= float(settings.get('min_prebreakout_score', 52.0)),
     ])
 
     support_floor = min(recent_low_10 - (atr_value * 0.25), current_price - (atr_value * 1.75))
@@ -2237,47 +2326,162 @@ def _conviction_bonus(mom_score, accum_score, rs_pct):
     return min(10.0, bonus)
 
 
+def _extract_ticker_df(ticker, data):
+    """Stage 1: Extract and validate a single ticker's OHLCV dataframe.
+
+    Returns (df, None) on success or (None, reason) on rejection.
+    """
+    if not isinstance(data.columns, pd.MultiIndex):
+        return None, "No Data"
+    if ticker not in data.columns.levels[0]:
+        return None, "No Data"
+    df = data[ticker].copy()
+    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+    if any(col not in df.columns for col in required_cols):
+        return None, "No Data"
+    df = df[required_cols].dropna()
+    if len(df) < 250:
+        return None, "No Data"
+    return df, None
+
+
+def _apply_liquidity_filters(df, settings):
+    """Stage 2: Price, volume, and ATR liquidity checks.
+
+    Returns (close, vol_avg, dollar_vol, atr, None) on success
+    or (None, None, None, None, reason) on rejection.
+    """
+    c = float(df['Close'].iloc[-1])
+    if c < 5.0:
+        return None, None, None, None, "Low Price/Liquidity"
+
+    vol_avg = df['Volume'].rolling(20).mean().iloc[-1]
+    dollar_vol = vol_avg * c
+    if dollar_vol < MIN_AVG_DOLLAR_VOLUME or vol_avg < MIN_AVG_VOLUME:
+        return None, None, None, None, "Low Price/Liquidity"
+
+    atr = atr_series(df).iloc[-1]
+    if pd.isna(atr) or atr <= 0 or atr / c > 0.10:
+        return None, None, None, None, "Low Price/Liquidity"
+
+    return c, vol_avg, dollar_vol, atr, None
+
+
+def _calculate_composite_score(
+    res, is_breakout, mom_score, accum_score, rs_pct,
+    distance_from_high_pct, pre_breakout_score, robustness_score,
+    wf_stats, regime_stats, t_stat, base_mkt_status, validator,
+    actionability, early_entry_candidate, prebreakout_plan,
+):
+    """Stage 8: Calculate enhanced composite ranking score.
+
+    Combines backtest quality with forward-looking momentum, accumulation,
+    relative strength, and robustness signals.
+    """
+    score = res['win_rate'] + (res['pf'] * 10)
+
+    # Momentum bonus (0-15 pts)
+    if mom_score >= 70:
+        score += 15
+    elif mom_score >= 55:
+        score += 10
+    elif mom_score >= 40:
+        score += 5
+
+    # Accumulation bonus (0-12 pts)
+    if accum_score >= 70:
+        score += 12
+    elif accum_score >= 50:
+        score += 8
+    elif accum_score >= 35:
+        score += 4
+
+    # Relative strength bonus (0-10 pts)
+    if rs_pct >= 80:
+        score += 10
+    elif rs_pct >= 65:
+        score += 7
+    elif rs_pct >= 50:
+        score += 3
+
+    # Blue sky breakout bonus (0-8 pts)
+    if is_breakout and validator.is_blue_sky_breakout():
+        score += 8
+    if is_breakout:
+        if distance_from_high_pct <= 4:
+            score += 6
+        elif distance_from_high_pct <= 8:
+            score += 3
+
+    if pre_breakout_score > 0:
+        score += min(12, pre_breakout_score * 0.12)
+    if abs(prebreakout_plan.get('avwap_distance', 0.0)) <= 0.03:
+        score += 4
+    if early_entry_candidate:
+        score += 10
+
+    entry_ready_score = float(actionability.get('score', 0.0))
+    if entry_ready_score > 0:
+        score += min(12, entry_ready_score * 0.5)
+
+    # Robustness bonus
+    if robustness_score >= 75:
+        score += 12
+    elif robustness_score >= 60:
+        score += 8
+    elif robustness_score >= 50:
+        score += 4
+    if wf_stats.get('pass_rate', 0.0) >= 0.75:
+        score += 6
+    elif wf_stats.get('pass_rate', 0.0) >= 0.50:
+        score += 3
+    if regime_stats.get('score', 0.0) >= 0.67:
+        score += 4
+    elif regime_stats.get('score', 0.0) >= 0.34:
+        score += 2
+
+    # Market regime bonus
+    if base_mkt_status in ("STRONG_BULL", "BULL"):
+        score += 10
+    elif base_mkt_status == "RECOVERY":
+        score += 4
+
+    # Statistical significance bonus
+    if t_stat >= 2.0:
+        score += 10
+    elif t_stat >= 1.5:
+        score += 5
+
+    return score
+
+
 def process_ticker(ticker, data, mkt_status, spy_close, settings,
                    spy_df=None, all_stock_returns=None, top_sectors=None):
     """Process a single ticker and return setup if valid.
 
-    Enhanced with momentum scoring, volume accumulation detection,
-    relative strength ranking, and blue sky breakout bonus.
+    Pipeline stages:
+      1. Data extraction     (_extract_ticker_df)
+      2. Liquidity filters   (_apply_liquidity_filters)
+      3. Trend & setup type detection
+      4. Signal calculation   (momentum, RS, pre-breakout)
+      5. Backtest validation  (leader fallback)
+      6. Quality gates        (OOS, walk-forward, regime, robustness)
+      7. Trade level calc     (entry/stop/target, position sizing)
+      8. Composite scoring    (_calculate_composite_score)
+      9. Setup assembly
     """
     try:
-        # Extract dataframe
-        if isinstance(data.columns, pd.MultiIndex):
-            if ticker not in data.columns.levels[0]:
-                return None, "No Data", None
-            df = data[ticker].copy()
-        else:
-            return None, "No Data", None
+        # Stage 1: Data extraction
+        df, reject = _extract_ticker_df(ticker, data)
+        if df is None:
+            return None, reject, None
 
-        required_cols = ["Open", "High", "Low", "Close", "Volume"]
-        if any(col not in df.columns for col in required_cols):
-            return None, "No Data", None
-        df = df[required_cols].dropna()
+        # Stage 2: Liquidity filters
+        c, vol_avg, dollar_vol, atr, reject = _apply_liquidity_filters(df, settings)
+        if c is None:
+            return None, reject, None
 
-        if len(df) < 250:
-            return None, "No Data", None
-
-        # Basic filters
-        c = float(df['Close'].iloc[-1])
-        if c < 5.0:
-            return None, "Low Price/Liquidity", None
-
-        vol_avg = df['Volume'].rolling(20).mean().iloc[-1]
-        dollar_vol = vol_avg * c
-
-        if dollar_vol < MIN_AVG_DOLLAR_VOLUME or vol_avg < MIN_AVG_VOLUME:
-            return None, "Low Price/Liquidity", None
-
-        # ATR check
-        atr = atr_series(df).iloc[-1]
-        if pd.isna(atr) or atr <= 0 or atr / c > 0.10:
-            return None, "Low Price/Liquidity", None
-
-        # Trend check
+        # Stage 3: Trend check
         sma50 = df['Close'].rolling(50).mean().iloc[-1]
         sma200 = df['Close'].rolling(200).mean().iloc[-1]
         base_mkt_status = get_base_market_status(mkt_status)
@@ -2617,7 +2821,7 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
                 (base_mkt_status == 'Correction' and leader_signal_ready)
             )
         )
-        if early_entry_candidate and robustness_score < float(settings.get('min_early_entry_robustness', 85.0)):
+        if early_entry_candidate and robustness_score < float(settings.get('min_early_entry_robustness', 65.0)):
             early_entry_candidate = False
 
         stop_mult, target_mult = get_strategy_trade_multipliers(strategy_name, settings)
@@ -2839,84 +3043,15 @@ def process_ticker(ticker, data, mkt_status, spy_close, settings,
             rs_percentile=rs_pct
         )
 
-        # --- Enhanced composite score ---
-        # Base: backtest quality
-        score = res['win_rate'] + (res['pf'] * 10)
-
-        # Momentum bonus (0-15 pts): stocks going up tend to keep going up
-        if mom_score >= 70:
-            score += 15
-        elif mom_score >= 55:
-            score += 10
-        elif mom_score >= 40:
-            score += 5
-
-        # Accumulation bonus (0-12 pts): institutional buying = smart money
-        if accum_score >= 70:
-            score += 12
-        elif accum_score >= 50:
-            score += 8
-        elif accum_score >= 35:
-            score += 4
-
-        # Relative strength bonus (0-10 pts): leaders outperform
-        if rs_pct >= 80:
-            score += 10
-        elif rs_pct >= 65:
-            score += 7
-        elif rs_pct >= 50:
-            score += 3
-
-        # FIX: Blue sky breakout bonus (0-8 pts)
-        # Stocks near 52-week highs have no overhead resistance.
-        # Breakouts into blue sky have highest follow-through rate.
-        if is_breakout and validator.is_blue_sky_breakout():
-            score += 8
-        if is_breakout:
-            if distance_from_high_pct <= 4:
-                score += 6
-            elif distance_from_high_pct <= 8:
-                score += 3
-
+        # --- Stage 8: Enhanced composite score ---
         pre_breakout_score = float(prebreakout_plan.get('score', 0.0))
-        if pre_breakout_score > 0:
-            score += min(12, pre_breakout_score * 0.12)
-        if abs(prebreakout_plan.get('avwap_distance', 0.0)) <= 0.03:
-            score += 4
-        if early_entry_candidate:
-            score += 10
-
         entry_ready_score = float(actionability.get('score', 0.0))
-        if entry_ready_score > 0:
-            score += min(12, entry_ready_score * 0.5)
-
-        # Robustness bonus - reward ideas that survive harder validation
-        if robustness_score >= 75:
-            score += 12
-        elif robustness_score >= 60:
-            score += 8
-        elif robustness_score >= 50:
-            score += 4
-        if wf_stats.get('pass_rate', 0.0) >= 0.75:
-            score += 6
-        elif wf_stats.get('pass_rate', 0.0) >= 0.50:
-            score += 3
-        if regime_stats.get('score', 0.0) >= 0.67:
-            score += 4
-        elif regime_stats.get('score', 0.0) >= 0.34:
-            score += 2
-
-        # Market regime bonus
-        if base_mkt_status in ("STRONG_BULL", "BULL"):
-            score += 10
-        elif base_mkt_status == "RECOVERY":
-            score += 4
-
-        # Statistical significance bonus
-        if t_stat >= 2.0:
-            score += 10
-        elif t_stat >= 1.5:
-            score += 5
+        score = _calculate_composite_score(
+            res, is_breakout, mom_score, accum_score, rs_pct,
+            distance_from_high_pct, pre_breakout_score, robustness_score,
+            wf_stats, regime_stats, t_stat, base_mkt_status, validator,
+            actionability, early_entry_candidate, prebreakout_plan,
+        )
 
         # Kelly
         W = res['win_rate'] / 100
@@ -3505,6 +3640,8 @@ def main():
                             signal_tracker.add_signal(s, s.price)
     else:
         watchlist = mkt_data.get('watchlist', [])
+        stalk_candidates = [w for w in watchlist if w.get('status') == 'STALK']
+        research_candidates = [w for w in watchlist if w.get('status') != 'STALK']
         opportunity = build_scan_opportunity_summary(
             setups,
             watchlist,
@@ -3515,30 +3652,39 @@ def main():
         print(f"  {opportunity['headline']}")
         if opportunity.get('detail'):
             print(f"  {opportunity['detail']}")
+        if mkt_data.get('top_sectors'):
+            print(f"  Preferred sectors: {', '.join(mkt_data['top_sectors'])}")
+
+        # v9.5: Show STALK candidates first — these are pre-breakout limit order targets
+        if stalk_candidates:
+            print(f"\n  {'='*56}")
+            print(f"  STALKING: {len(stalk_candidates)} pre-breakout candidates")
+            print(f"  Place limit orders at the trigger price and go to sleep.")
+            print(f"  {'='*56}")
+            print_watchlist_board(
+                stalk_candidates,
+                top_sectors=mkt_data.get('top_sectors'),
+                title="Pre-Breakout Stalking (Limit Order Targets)",
+                footer="These are NEAR their breakout pivot. Place GTC limit buy at the trigger price with bracket stop+target.",
+            )
+            # Generate and print the concrete order plan
+            stalk_orders = generate_stalk_orders(stalk_candidates, settings)
+            print_stalk_orders(stalk_orders)
+
         if setups:
-            print(f"\n  Found {len(setups)} setups:")
-            if mkt_data.get('top_sectors'):
-                print(f"  Preferred sectors: {', '.join(mkt_data['top_sectors'])}")
+            print(f"\n  Found {len(setups)} confirmed setups:")
             print_manual_trade_board(setups, settings, top_sectors=mkt_data.get('top_sectors'))
-            if watchlist:
-                print("\n  Additional research names are technically interesting but are not action-ready buy-now setups.")
-                print_watchlist_board(
-                    watchlist,
-                    top_sectors=mkt_data.get('top_sectors'),
-                    title="Research Watchlist",
-                    footer="Research names are secondary stalk ideas only. They are not action-ready trades.",
-                )
-        else:
-            print("\n  No fully action-ready setups found.")
-            if watchlist:
-                if mkt_data.get('top_sectors'):
-                    print(f"  Preferred sectors: {', '.join(mkt_data['top_sectors'])}")
-                print("  Showing research-only names to stalk while the validated bucket is empty.")
-                print_watchlist_board(
-                    watchlist,
-                    top_sectors=mkt_data.get('top_sectors'),
-                    title="Research Watchlist",
-                )
+
+        if research_candidates:
+            print_watchlist_board(
+                research_candidates,
+                top_sectors=mkt_data.get('top_sectors'),
+                title="Research Watchlist (Not Ready Yet)",
+                footer="These need more time. Monitor for compression tightening over the next 1-3 days.",
+            )
+
+        if not setups and not stalk_candidates:
+            print("\n  No action-ready setups or stalk candidates found. Quiet session.")
     
     # Show filter stats
     print("\n  Filter Summary:")
@@ -3558,6 +3704,10 @@ def main():
             timestamp=datetime.now().isoformat(),
             action_labeler=manual_action_label,
         )
+        # v9.5: Include stalk orders in the export for the dashboard
+        watchlist = mkt_data.get('watchlist', [])
+        stalk_items = [w for w in watchlist if w.get('status') == 'STALK']
+        export_data['stalk_orders'] = generate_stalk_orders(stalk_items, settings)
         with open("data/latest_scan.json", "w") as f:
             json.dump(export_data, f, indent=4)
         print("    Saved to data/latest_scan.json")

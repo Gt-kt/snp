@@ -377,7 +377,7 @@ class StrategyValidator:
                 outcome_pct = self._simulate_trade(
                     buy_price, stop_loss, target,
                     (closes, highs, lows, opens),
-                    i + 2, max_hold=12, trail_risk=risk, slippage_pct=0.003
+                    i + 2, max_hold=7, trail_risk=risk, slippage_pct=0.003
                 )
                 trades.append(outcome_pct)
 
@@ -501,7 +501,7 @@ class StrategyValidator:
                 buy_price, stop_loss, target,
                 (closes, highs, lows, opens),
                 i + 2,
-                max_hold=12,
+                max_hold=7,
                 trail_risk=risk,
                 trail_r1=1.0,
                 trail_r2=1.8,
@@ -627,7 +627,7 @@ class StrategyValidator:
                 outcome_pct = self._simulate_trade(
                     buy_price, stop, target,
                     (closes.values, highs.values, lows.values, opens.values),
-                    i + 1, max_hold=10, trail_risk=risk, slippage_pct=0.001
+                    i + 1, max_hold=7, trail_risk=risk, slippage_pct=0.001
                 )
                 trades.append(outcome_pct)
 

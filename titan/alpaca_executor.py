@@ -350,9 +350,50 @@ class AlpacaExecutor:
             )
             logger.info(f"SUCCESS: Submitted bracket order for {qty} shares of {symbol} at Limit ${entry_price:.2f}.")
             return True
-            
+
         except Exception as e:
             logger.error(f"FAILED to submit order for {symbol}: {e}")
+            return False
+
+    def submit_stalk_bracket_order(self, symbol, qty, pivot_price, stop_price, target_price):
+        """Submit a GTC bracket order for pre-breakout stalking.
+
+        Places a limit buy at the breakout pivot that stays open until
+        filled or cancelled. The trader places this at night and goes
+        to sleep — the order fills when (if) the stock hits the pivot.
+        """
+        if not self.connected:
+            logger.error("Cannot submit stalk order: Not connected to Alpaca.")
+            return False
+        try:
+            positions = [p.symbol for p in self.list_positions()]
+            if symbol in positions:
+                logger.warning(f"Already hold {symbol}. Skipping stalk order.")
+                return False
+
+            open_orders = [o.symbol for o in self.api.list_orders(status='open')]
+            if symbol in open_orders:
+                logger.warning(f"Already have open order for {symbol}. Skipping stalk order.")
+                return False
+
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=int(qty),
+                side='buy',
+                type='limit',
+                time_in_force='gtc',
+                limit_price=round(pivot_price, 2),
+                order_class='bracket',
+                take_profit=dict(limit_price=round(target_price, 2)),
+                stop_loss=dict(stop_price=round(stop_price, 2)),
+            )
+            logger.info(
+                f"STALK ORDER: {symbol} qty={qty} limit=${pivot_price:.2f} "
+                f"stop=${stop_price:.2f} target=${target_price:.2f} (GTC)"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"FAILED stalk order for {symbol}: {e}")
             return False
 
 
