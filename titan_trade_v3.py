@@ -1675,6 +1675,12 @@ def build_watchlist_candidates(tickers, data, settings, top_sectors=None, spy_df
     watchlist = {}
     watch_score_floor = float(settings.get('watchlist_min_score', 62.0))
 
+    def get_watch_grade(score):
+        if score >= 120: return 'A'
+        if score >= 110: return 'B'
+        if score >= 100: return 'C'
+        return 'D'
+
     def store_candidate(item):
         existing = watchlist.get(item['ticker'])
         if existing is None:
@@ -1806,6 +1812,7 @@ def build_watchlist_candidates(tickers, data, settings, top_sectors=None, spy_df
                         'accumulation_score': round(accum_score, 1),
                         'earnings_call': earnings_call,
                         'score': round(watch_score, 1),
+                        'confidence_grade': get_watch_grade(watch_score),
                         'why': 'Strong leader continuation near highs',
                         'pre_breakout_score': round(pre_breakout_score, 1),
                         'research_only': True,
@@ -1883,6 +1890,7 @@ def build_watchlist_candidates(tickers, data, settings, top_sectors=None, spy_df
                 'accumulation_score': round(accum_score, 1),
                 'earnings_call': earnings_call,
                 'score': round(watch_score, 1),
+                'confidence_grade': get_watch_grade(watch_score),
                 'why': why,
                 'pre_breakout_score': round(pre_breakout_score, 1),
                 'research_only': True,

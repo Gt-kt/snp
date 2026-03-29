@@ -1,0 +1,1262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Titan Trade — Live Scanner</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   TITAN TRADE LIVE DASHBOARD — Dark Trading Terminal Theme
+   ============================================================ */
+:root {
+  --bg-primary: #0a0e17;
+  --bg-secondary: #111827;
+  --bg-card: #1a2035;
+  --bg-card-hover: #1f2847;
+  --bg-header: #0d1220;
+  --border: #1e293b;
+  --border-light: #2a3a52;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent-blue: #3b82f6;
+  --accent-cyan: #22d3ee;
+  --accent-green: #10b981;
+  --accent-red: #ef4444;
+  --accent-amber: #f59e0b;
+  --accent-purple: #a78bfa;
+  --grade-a: #10b981;
+  --grade-b: #3b82f6;
+  --grade-c: #f59e0b;
+  --grade-d: #f97316;
+  --grade-f: #ef4444;
+  --glow-green: 0 0 20px rgba(16, 185, 129, 0.15);
+  --glow-blue: 0 0 20px rgba(59, 130, 246, 0.15);
+  --glow-red: 0 0 20px rgba(239, 68, 68, 0.15);
+  --radius: 8px;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* --- TOP BAR ----------------------------------------------------------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  height: 56px;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.logo {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--accent-cyan);
+  letter-spacing: 1px;
+}
+.logo span { color: var(--text-muted); font-weight: 400; }
+
+.topbar-center {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Status pills */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  letter-spacing: 0.5px;
+}
+.pill-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.pill-bull { background: rgba(16, 185, 129, 0.15); color: var(--accent-green); }
+.pill-bull .pill-dot { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
+.pill-bear { background: rgba(239, 68, 68, 0.15); color: var(--accent-red); }
+.pill-bear .pill-dot { background: var(--accent-red); box-shadow: 0 0 6px var(--accent-red); }
+.pill-neutral { background: rgba(148, 163, 184, 0.15); color: var(--text-secondary); }
+.pill-neutral .pill-dot { background: var(--text-secondary); }
+.pill-correction { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
+.pill-correction .pill-dot { background: var(--accent-amber); box-shadow: 0 0 6px var(--accent-amber); }
+
+.vix-pill {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--text-secondary);
+}
+.vix-low { color: var(--accent-green); background: rgba(16, 185, 129, 0.1); }
+.vix-mid { color: var(--accent-amber); background: rgba(245, 158, 11, 0.1); }
+.vix-high { color: var(--accent-red); background: rgba(239, 68, 68, 0.15); }
+
+.scan-status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.scan-status.scanning { color: var(--accent-cyan); }
+
+.btn-scan {
+  background: var(--accent-blue);
+  color: white;
+  border: none;
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition: all 0.2s;
+}
+.btn-scan:hover { background: #2563eb; }
+.btn-scan:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-auto {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-light);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-auto:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+.btn-auto.active {
+  background: rgba(34, 211, 238, 0.12);
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+.btn-auto .auto-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: all 0.3s;
+}
+.btn-auto.active .auto-dot {
+  background: var(--accent-cyan);
+  box-shadow: 0 0 6px var(--accent-cyan);
+}
+
+.refresh-flash {
+  animation: flashBorder 1s ease-out;
+}
+@keyframes flashBorder {
+  0% { box-shadow: inset 0 0 0 2px var(--accent-cyan); }
+  100% { box-shadow: inset 0 0 0 0px transparent; }
+}
+
+.ws-indicator {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--accent-red);
+  transition: background 0.3s;
+}
+.ws-indicator.connected { background: var(--accent-green); box-shadow: 0 0 8px rgba(16,185,129,0.5); }
+
+/* --- ALERT BANNER ------------------------------------------------------ */
+.alert-banner {
+  padding: 10px 24px;
+  font-size: 13px;
+  font-weight: 500;
+  display: none;
+  align-items: center;
+  gap: 8px;
+}
+.alert-banner.visible { display: flex; }
+.alert-actionable { background: rgba(16, 185, 129, 0.1); color: var(--accent-green); border-bottom: 1px solid rgba(16,185,129,0.2); }
+.alert-research { background: rgba(59, 130, 246, 0.08); color: var(--accent-blue); border-bottom: 1px solid rgba(59,130,246,0.15); }
+.alert-defensive { background: rgba(239, 68, 68, 0.08); color: var(--accent-red); border-bottom: 1px solid rgba(239,68,68,0.15); }
+.alert-quiet { background: rgba(148, 163, 184, 0.05); color: var(--text-muted); border-bottom: 1px solid var(--border); }
+
+/* --- STATS ROW --------------------------------------------------------- */
+.stats-row {
+  display: flex;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 18px;
+  flex: 1;
+  min-width: 140px;
+}
+.stat-card .label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.stat-card .value {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+}
+.stat-card .sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* --- MAIN LAYOUT ------------------------------------------------------- */
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+/* --- SECTION ----------------------------------------------------------- */
+.section {
+  border-bottom: 1px solid var(--border);
+  padding: 20px 24px;
+}
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.section-title {
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+}
+.section-badge {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 4px;
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-blue);
+}
+.section-badge.green { background: rgba(16, 185, 129, 0.15); color: var(--accent-green); }
+
+/* --- TABLE ------------------------------------------------------------- */
+.table-wrap {
+  overflow-x: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+thead th {
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  white-space: nowrap;
+}
+tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+tbody tr { transition: background 0.15s; }
+tbody tr:hover { background: var(--bg-card-hover); }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr.highlight-new {
+  animation: rowFlash 2s ease-out;
+}
+@keyframes rowFlash {
+  0% { background: rgba(16, 185, 129, 0.2); }
+  100% { background: transparent; }
+}
+
+.ticker-cell {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--accent-cyan);
+}
+.action-cell {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  display: inline-block;
+}
+.action-buy { background: rgba(16, 185, 129, 0.15); color: var(--accent-green); }
+.action-watch { background: rgba(245, 158, 11, 0.12); color: var(--accent-amber); }
+.action-pilot { background: rgba(167, 139, 250, 0.15); color: var(--accent-purple); }
+
+.grade-badge {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 13px;
+  width: 28px; height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+}
+.grade-A { background: rgba(16, 185, 129, 0.2); color: var(--grade-a); }
+.grade-B { background: rgba(59, 130, 246, 0.2); color: var(--grade-b); }
+.grade-C { background: rgba(245, 158, 11, 0.2); color: var(--grade-c); }
+.grade-D { background: rgba(249, 115, 22, 0.2); color: var(--grade-d); }
+.grade-F { background: rgba(239, 68, 68, 0.2); color: var(--grade-f); }
+
+.mono { font-family: var(--font-mono); }
+.text-green { color: var(--accent-green); }
+.text-red { color: var(--accent-red); }
+.text-amber { color: var(--accent-amber); }
+.text-blue { color: var(--accent-blue); }
+.text-muted { color: var(--text-muted); }
+.text-cyan { color: var(--accent-cyan); }
+.text-purple { color: var(--accent-purple); }
+
+.sector-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(34, 211, 238, 0.12);
+  color: var(--accent-cyan);
+}
+.sector-tag.aligned { background: rgba(16, 185, 129, 0.15); color: var(--accent-green); }
+
+.bar-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mini-bar {
+  width: 50px; height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.mini-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+.bar-green { background: var(--accent-green); }
+.bar-blue { background: var(--accent-blue); }
+.bar-amber { background: var(--accent-amber); }
+.bar-red { background: var(--accent-red); }
+
+/* Price levels */
+.price-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.price-levels .entry { color: var(--text-primary); }
+.price-levels .stop { color: var(--accent-red); }
+.price-levels .target { color: var(--accent-green); }
+
+/* --- FILTER FUNNEL ----------------------------------------------------- */
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+.filter-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.filter-item .name { color: var(--text-secondary); }
+.filter-item .count {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* --- SECTORS ----------------------------------------------------------- */
+.sector-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sector-chip {
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(34, 211, 238, 0.1);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(34, 211, 238, 0.2);
+}
+
+/* --- DETAIL PANEL (expandable row) ------------------------------------- */
+.detail-row td {
+  padding: 0 !important;
+  border-bottom: 1px solid var(--border);
+}
+.detail-content {
+  padding: 14px 20px;
+  background: var(--bg-secondary);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+.detail-item .label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+.detail-item .val {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* --- EMPTY STATE ------------------------------------------------------- */
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-muted);
+}
+.empty-state .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.4; }
+.empty-state p { font-size: 14px; }
+
+/* --- SCANNING OVERLAY -------------------------------------------------- */
+.scanning-pulse {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  animation: pulse 1.5s ease-in-out infinite;
+  margin-right: 6px;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+/* --- STALK ORDERS ------------------------------------------------------ */
+.stalk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+.stalk-card {
+  background: var(--bg-card);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: var(--radius);
+  padding: 16px;
+  position: relative;
+  transition: all 0.2s;
+}
+.stalk-card:hover {
+  border-color: var(--accent-green);
+  box-shadow: var(--glow-green);
+}
+.stalk-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.stalk-ticker {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+}
+.stalk-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-green);
+  letter-spacing: 1px;
+}
+.stalk-levels {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.stalk-level {
+  text-align: center;
+  padding: 8px 4px;
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+.stalk-level .sl-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+.stalk-level .sl-price {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+}
+.sl-entry .sl-label { color: var(--accent-blue); }
+.sl-entry .sl-price { color: var(--text-primary); }
+.sl-stop .sl-label { color: var(--accent-red); }
+.sl-stop .sl-price { color: var(--accent-red); }
+.sl-target .sl-label { color: var(--accent-green); }
+.sl-target .sl-price { color: var(--accent-green); }
+
+.stalk-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.stalk-meta .sm-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.stalk-meta .sm-val {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.stalk-empty {
+  text-align: center;
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: 13px;
+  background: var(--bg-card);
+  border: 1px dashed var(--border-light);
+  border-radius: var(--radius);
+}
+
+/* --- SCROLLBAR --------------------------------------------------------- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* --- RESPONSIVE -------------------------------------------------------- */
+@media (max-width: 768px) {
+  .topbar { padding: 0 12px; flex-wrap: wrap; height: auto; min-height: 56px; gap: 8px; padding-top: 8px; padding-bottom: 8px; }
+  .topbar-center { order: 3; width: 100%; justify-content: center; }
+  .stats-row { padding: 12px; }
+  .section { padding: 16px 12px; }
+  .stat-card { min-width: 100px; padding: 8px 12px; }
+  .stat-card .value { font-size: 16px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ================================================================== -->
+<!-- TOP BAR                                                            -->
+<!-- ================================================================== -->
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="logo">TITAN<span> TRADE</span></div>
+    <div id="market-pill" class="pill pill-neutral">
+      <span class="pill-dot"></span>
+      <span id="market-label">CONNECTING...</span>
+    </div>
+    <div id="vix-pill" class="vix-pill">VIX --</div>
+  </div>
+  <div class="topbar-center">
+    <span id="scan-status" class="scan-status">Connecting...</span>
+  </div>
+  <div class="topbar-right">
+    <button id="btn-auto" class="btn-auto active" onclick="toggleAutoRefresh()" title="Auto-refresh page when scan completes">
+      <span class="auto-dot"></span>AUTO-REFRESH
+    </button>
+    <button id="btn-scan" class="btn-scan" onclick="requestScan()" disabled>SCAN NOW</button>
+    <div id="ws-dot" class="ws-indicator" title="WebSocket"></div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- ALERT BANNER                                                       -->
+<!-- ================================================================== -->
+<div id="alert-banner" class="alert-banner"></div>
+
+<!-- ================================================================== -->
+<!-- STATS ROW                                                          -->
+<!-- ================================================================== -->
+<div class="stats-row">
+  <div class="stat-card">
+    <div class="label">Actionable Setups</div>
+    <div class="value text-green" id="stat-actionable">--</div>
+    <div class="sub" id="stat-actionable-sub">waiting for scan</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Research Names</div>
+    <div class="value text-blue" id="stat-research">--</div>
+    <div class="sub" id="stat-research-sub">watchlist</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Market Regime</div>
+    <div class="value" id="stat-regime">--</div>
+    <div class="sub" id="stat-regime-sub">&nbsp;</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Top Sectors</div>
+    <div id="sector-chips" class="sector-chips" style="margin-top:4px">
+      <span class="text-muted" style="font-size:12px">--</span>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Scan Count</div>
+    <div class="value mono" id="stat-scans">0</div>
+    <div class="sub" id="stat-last-scan">never</div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- STALK ORDERS — Place these and go to sleep                         -->
+<!-- ================================================================== -->
+<div class="section" id="section-stalk">
+  <div class="section-header">
+    <span class="section-title">Stalk Orders — Place &amp; Sleep</span>
+    <span class="section-badge green" id="stalk-count-badge">0</span>
+  </div>
+  <div id="stalk-grid" class="stalk-grid">
+    <div class="stalk-empty">Waiting for first scan...</div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- ACTIONABLE SETUPS                                                  -->
+<!-- ================================================================== -->
+<div class="section" id="section-setups">
+  <div class="section-header">
+    <span class="section-title">Buy Signals</span>
+    <span class="section-badge green" id="setup-count-badge">0</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Action</th>
+          <th>Strategy</th>
+          <th>Grade</th>
+          <th>Entry / Stop / Target</th>
+          <th>Win%</th>
+          <th>PF</th>
+          <th>Mom</th>
+          <th>RS</th>
+          <th>Robustness</th>
+          <th>OOS</th>
+          <th>WF</th>
+          <th>Regime</th>
+          <th>Sector</th>
+          <th>Dist</th>
+          <th>Earn</th>
+        </tr>
+      </thead>
+      <tbody id="setups-body">
+        <tr><td colspan="16" class="empty-state"><div class="icon">&#x1F50D;</div><p>Waiting for first scan...</p></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- RESEARCH WATCHLIST                                                  -->
+<!-- ================================================================== -->
+<div class="section" id="section-watchlist">
+  <div class="section-header">
+    <span class="section-title">Research Watchlist</span>
+    <span class="section-badge" id="watch-count-badge">0</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Theme</th>
+          <th>Status</th>
+          <th>Price</th>
+          <th>Trigger</th>
+          <th>Dist</th>
+          <th>Score</th>
+          <th>Grade</th>
+          <th>Mom</th>
+          <th>RS</th>
+          <th>Acc</th>
+          <th>Sector</th>
+          <th>Earn</th>
+          <th>Why</th>
+        </tr>
+      </thead>
+      <tbody id="watchlist-body">
+        <tr><td colspan="13" class="empty-state"><p>No research names yet</p></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- FILTER FUNNEL                                                      -->
+<!-- ================================================================== -->
+<div class="section">
+  <div class="section-header">
+    <span class="section-title">Filter Funnel</span>
+  </div>
+  <div class="filter-grid" id="filter-grid">
+    <div class="filter-item"><span class="name">Awaiting scan...</span></div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- JAVASCRIPT                                                         -->
+<!-- ================================================================== -->
+<script>
+(function() {
+  "use strict";
+
+  // ---- State -----------------------------------------------------------
+  let ws = null;
+  let reconnectTimer = null;
+  let countdownTimer = null;
+  let nextScanTime = null;
+  let isScanning = false;
+  let previousTickers = new Set();
+  let autoRefresh = true;
+  let scanResultCount = 0;
+
+  // ---- Helpers ---------------------------------------------------------
+  const $ = id => document.getElementById(id);
+  const money = v => `$${Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+  const pct = (v, d=1) => `${Number(v||0).toFixed(d)}%`;
+
+  function marketPillClass(status) {
+    const s = String(status||"").toUpperCase();
+    if (s.includes("STRONG_BULL") || s.includes("BULL")) return "pill-bull";
+    if (s.includes("BEAR") || s.includes("PANIC")) return "pill-bear";
+    if (s.includes("CORRECTION") || s.includes("FEAR")) return "pill-correction";
+    return "pill-neutral";
+  }
+
+  function vixClass(v) {
+    v = Number(v||0);
+    if (v <= 15) return "vix-low";
+    if (v <= 22) return "";
+    if (v <= 30) return "vix-mid";
+    return "vix-high";
+  }
+
+  function actionClass(action) {
+    const a = String(action||"").toUpperCase();
+    if (a.includes("BUY")) return "action-buy";
+    if (a.includes("PILOT")) return "action-pilot";
+    return "action-watch";
+  }
+
+  function gradeClass(g) { return `grade-${String(g||"F").toUpperCase()}`; }
+
+  function alertClass(state) {
+    const s = String(state||"").toUpperCase();
+    if (s === "ACTIONABLE") return "alert-actionable";
+    if (s === "RESEARCH") return "alert-research";
+    if (s === "DEFENSIVE") return "alert-defensive";
+    return "alert-quiet";
+  }
+
+  function barColor(v) {
+    v = Number(v||0);
+    if (v >= 70) return "bar-green";
+    if (v >= 50) return "bar-blue";
+    if (v >= 30) return "bar-amber";
+    return "bar-red";
+  }
+
+  function timeAgo(iso) {
+    if (!iso) return "never";
+    const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (diff < 60) return "just now";
+    if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+    return `${Math.floor(diff/3600)}h ${Math.floor((diff%3600)/60)}m ago`;
+  }
+
+  function playNotificationSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 880;
+      osc.type = "sine";
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.3);
+    } catch(e) {}
+  }
+
+  // ---- Countdown -------------------------------------------------------
+  function startCountdown() {
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = setInterval(updateCountdown, 1000);
+  }
+
+  function updateCountdown() {
+    const statusEl = $("scan-status");
+    if (isScanning) {
+      statusEl.innerHTML = '<span class="scanning-pulse"></span>Scanning S&P 500...';
+      statusEl.className = "scan-status scanning";
+      return;
+    }
+    if (!nextScanTime) {
+      statusEl.textContent = "Waiting...";
+      return;
+    }
+    const diff = Math.max(0, (new Date(nextScanTime).getTime() - Date.now()) / 1000);
+    const m = Math.floor(diff / 60);
+    const s = Math.floor(diff % 60);
+    statusEl.textContent = `Next scan in ${m}:${String(s).padStart(2,"0")}`;
+    statusEl.className = "scan-status";
+  }
+
+  // ---- Render: Scan Results --------------------------------------------
+  function renderScanResult(data) {
+    if (!data) return;
+
+    const actionable = Number(data.actionable_count ?? (data.setups||[]).length);
+    const research = Number(data.research_watchlist_count ?? data.watchlist_count ?? (data.research_watchlist||[]).length);
+    const mktStatus = data.market_status || "UNKNOWN";
+    const vix = data.vix_level;
+    const topSectors = data.top_sectors || [];
+    const oppState = data.opportunity_state || "QUIET";
+    const oppHeadline = data.opportunity_headline || "";
+    const oppDetail = data.opportunity_detail || "";
+
+    // Topbar
+    const mp = $("market-pill");
+    mp.className = `pill ${marketPillClass(mktStatus)}`;
+    $("market-label").textContent = mktStatus;
+
+    const vp = $("vix-pill");
+    vp.textContent = vix != null ? `VIX ${Number(vix).toFixed(1)}` : "VIX --";
+    vp.className = `vix-pill ${vixClass(vix)}`;
+
+    // Stats
+    $("stat-actionable").textContent = actionable;
+    $("stat-actionable-sub").textContent = actionable === 1 ? "setup ready" : "setups ready";
+    $("stat-research").textContent = research;
+    $("stat-research-sub").textContent = "watchlist";
+    $("stat-regime").textContent = mktStatus;
+    $("stat-regime").className = `value ${marketPillClass(mktStatus).replace("pill-","text-")}`;
+    $("stat-regime-sub").textContent = vix != null ? `VIX ${Number(vix).toFixed(1)}` : "";
+
+    // Sectors
+    const sc = $("sector-chips");
+    if (topSectors.length) {
+      sc.innerHTML = topSectors.map(s => `<span class="sector-chip">${s}</span>`).join("");
+    } else {
+      sc.innerHTML = '<span class="text-muted" style="font-size:12px">--</span>';
+    }
+
+    // Scan count & time
+    $("stat-last-scan").textContent = timeAgo(data.timestamp);
+
+    // Alert banner
+    const ab = $("alert-banner");
+    ab.className = `alert-banner visible ${alertClass(oppState)}`;
+    ab.innerHTML = `<strong>${oppState}</strong> &mdash; ${oppHeadline}`;
+
+    // Stalk orders
+    const stalkOrders = data.stalk_orders || [];
+    $("stalk-count-badge").textContent = stalkOrders.length;
+    renderStalkOrders(stalkOrders);
+
+    // Setups table
+    const setups = data.setups || [];
+    const newTickers = new Set(setups.map(s => s.ticker));
+    $("setup-count-badge").textContent = setups.length;
+    renderSetupsTable(setups, newTickers);
+
+    // Check for new signals
+    if (previousTickers.size > 0) {
+      const brandNew = setups.filter(s => !previousTickers.has(s.ticker));
+      if (brandNew.length > 0) {
+        playNotificationSound();
+        document.title = `(${brandNew.length} NEW) Titan Trade`;
+        setTimeout(() => { document.title = "Titan Trade — Live Scanner"; }, 10000);
+      }
+    }
+    previousTickers = newTickers;
+
+    // Watchlist table
+    const watchlist = data.research_watchlist || data.watchlist || [];
+    $("watch-count-badge").textContent = watchlist.length;
+    renderWatchlistTable(watchlist);
+
+    // Filter funnel
+    renderFilterFunnel(data);
+  }
+
+  function renderStalkOrders(orders) {
+    const grid = $("stalk-grid");
+    if (!orders.length) {
+      grid.innerHTML = '<div class="stalk-empty">No stalk candidates in this scan — check back next cycle</div>';
+      return;
+    }
+    grid.innerHTML = "";
+    orders.forEach(o => {
+      const card = document.createElement("div");
+      card.className = "stalk-card";
+      card.innerHTML = `
+        <div class="stalk-card-header">
+          <span class="stalk-ticker">${o.symbol}</span>
+          <span class="stalk-badge">STALK</span>
+        </div>
+        <div class="stalk-levels">
+          <div class="stalk-level sl-entry">
+            <div class="sl-label">Limit Buy</div>
+            <div class="sl-price">${money(o.pivot_price)}</div>
+          </div>
+          <div class="stalk-level sl-stop">
+            <div class="sl-label">Stop Loss</div>
+            <div class="sl-price">${money(o.stop_price)}</div>
+          </div>
+          <div class="stalk-level sl-target">
+            <div class="sl-label">Target</div>
+            <div class="sl-price">${money(o.target_price)}</div>
+          </div>
+        </div>
+        <div class="stalk-meta">
+          <div class="sm-item">Shares: <span class="sm-val">${o.qty}</span></div>
+          <div class="sm-item">Risk: <span class="sm-val">$${Number(o.risk_dollars||0).toFixed(0)}</span></div>
+          <div class="sm-item">Sector: <span class="sm-val">${o.sector||"--"}</span></div>
+          ${o.score ? `<div class="sm-item">Score: <span class="sm-val">${Number(o.score).toFixed(0)}</span></div>` : ""}
+          ${o.rs_percentile ? `<div class="sm-item">RS: <span class="sm-val">${Number(o.rs_percentile).toFixed(0)}</span></div>` : ""}
+        </div>
+      `;
+      grid.appendChild(card);
+    });
+  }
+
+  function renderSetupsTable(setups, newTickers) {
+    const tbody = $("setups-body");
+    if (!setups.length) {
+      tbody.innerHTML = '<tr><td colspan="16" class="empty-state"><p>No actionable setups in this scan</p></td></tr>';
+      return;
+    }
+    tbody.innerHTML = "";
+    setups.forEach(s => {
+      const isNew = !previousTickers.has(s.ticker);
+      const tr = document.createElement("tr");
+      if (isNew) tr.className = "highlight-new";
+
+      const oosPf = Number(s.oos_pf||0);
+      const oosN = Number(s.oos_trades||0);
+      const wfPf = Number(s.walk_forward_pf||0);
+      const wfPr = Number(s.walk_forward_pass_rate||0);
+      const regS = Number(s.regime_score||0);
+      const rob = Number(s.robustness_score||0);
+      const dist = Number(s.distance_to_entry_pct||0);
+
+      tr.innerHTML = `
+        <td class="ticker-cell">${s.ticker}</td>
+        <td><span class="action-cell ${actionClass(s.action)}">${s.action||s.confirmation_status||"WATCH"}</span></td>
+        <td class="mono" style="font-size:11px">${s.strategy}</td>
+        <td><span class="grade-badge ${gradeClass(s.confidence_grade)}">${s.confidence_grade}</span></td>
+        <td>
+          <div class="price-levels">
+            <span class="entry">${money(s.trigger)}</span>
+            <span class="stop">${money(s.stop)}</span>
+            <span class="target">${money(s.target)}</span>
+          </div>
+        </td>
+        <td class="mono">${pct(s.win_rate)}</td>
+        <td class="mono">${Number(s.profit_factor||0).toFixed(2)}</td>
+        <td>
+          <div class="bar-cell">
+            <span class="mono" style="font-size:11px">${Number(s.momentum_score||0).toFixed(0)}</span>
+            <div class="mini-bar"><div class="mini-bar-fill ${barColor(s.momentum_score)}" style="width:${Math.min(100,s.momentum_score||0)}%"></div></div>
+          </div>
+        </td>
+        <td>
+          <div class="bar-cell">
+            <span class="mono" style="font-size:11px">${Number(s.rs_percentile||0).toFixed(0)}</span>
+            <div class="mini-bar"><div class="mini-bar-fill ${barColor(s.rs_percentile)}" style="width:${Math.min(100,s.rs_percentile||0)}%"></div></div>
+          </div>
+        </td>
+        <td>
+          <div class="bar-cell">
+            <span class="mono" style="font-size:11px">${rob.toFixed(0)}</span>
+            <div class="mini-bar"><div class="mini-bar-fill ${barColor(rob)}" style="width:${Math.min(100,rob)}%"></div></div>
+          </div>
+        </td>
+        <td class="mono" style="font-size:11px">${oosN > 0 ? `${oosPf.toFixed(2)}/${oosN}` : "--"}</td>
+        <td class="mono" style="font-size:11px">${wfPf > 0 ? `${wfPf.toFixed(2)}/${pct(wfPr*100,0)}` : "--"}</td>
+        <td class="mono" style="font-size:11px">${pct(regS*100,0)}</td>
+        <td>${s.sector_aligned ? `<span class="sector-tag aligned">${s.sector}</span>` : `<span class="sector-tag">${s.sector||""}</span>`}</td>
+        <td class="mono ${dist > 2 ? "text-amber" : dist > 0 ? "text-muted" : "text-green"}" style="font-size:11px">${dist > 0 ? `+${dist.toFixed(1)}%` : `${dist.toFixed(1)}%`}</td>
+        <td class="mono" style="font-size:11px">${s.earnings_call || "?"}</td>
+      `;
+
+      // Click to expand detail
+      tr.style.cursor = "pointer";
+      tr.addEventListener("click", () => toggleDetail(tr, s));
+      tbody.appendChild(tr);
+    });
+  }
+
+  function toggleDetail(tr, s) {
+    const existing = tr.nextElementSibling;
+    if (existing && existing.classList.contains("detail-row")) {
+      existing.remove();
+      return;
+    }
+    const detail = document.createElement("tr");
+    detail.className = "detail-row";
+    detail.innerHTML = `<td colspan="16">
+      <div class="detail-content">
+        <div class="detail-item"><div class="label">Pre-Breakout</div><div class="val">${Number(s.pre_breakout_score||0).toFixed(0)}</div></div>
+        <div class="detail-item"><div class="label">Expectancy</div><div class="val">${Number(s.net_expectancy||0).toFixed(4)}</div></div>
+        <div class="detail-item"><div class="label">Starter Trigger</div><div class="val">${money(s.starter_trigger)}</div></div>
+        <div class="detail-item"><div class="label">Add-On Trigger</div><div class="val">${Number(s.add_on_trigger||0) > 0 ? money(s.add_on_trigger) : "--"}</div></div>
+        <div class="detail-item"><div class="label">Partial Target</div><div class="val">${Number(s.partial_target||0) > 0 ? money(s.partial_target) : "--"}</div></div>
+        <div class="detail-item"><div class="label">Starter Qty</div><div class="val">${s.starter_qty || s.qty || "--"}</div></div>
+        <div class="detail-item"><div class="label">Total Plan</div><div class="val">${s.planned_total_qty || "--"}</div></div>
+        <div class="detail-item"><div class="label">Add-On Qty</div><div class="val">${Number(s.add_on_qty||0) > 0 ? s.add_on_qty : "--"}</div></div>
+        <div class="detail-item"><div class="label">Position Scalar</div><div class="val">${Number(s.position_size_scalar||1).toFixed(2)}x</div></div>
+        <div class="detail-item"><div class="label">Tier</div><div class="val">${s.opportunity_tier || "VALIDATED"}</div></div>
+        <div class="detail-item"><div class="label">From 52w High</div><div class="val">${Number(s.distance_from_high_pct||0).toFixed(1)}%</div></div>
+        <div class="detail-item"><div class="label">Entry Ready</div><div class="val">${Number(s.entry_ready_score||0).toFixed(0)}</div></div>
+      </div>
+    </td>`;
+    tr.after(detail);
+  }
+
+  function renderWatchlistTable(watchlist) {
+    const tbody = $("watchlist-body");
+    if (!watchlist.length) {
+      tbody.innerHTML = '<tr><td colspan="14" class="empty-state"><p>No research names in this scan</p></td></tr>';
+      return;
+    }
+    tbody.innerHTML = "";
+    watchlist.forEach(w => {
+      const tr = document.createElement("tr");
+      const statusClass = w.status === "STALK" ? "text-amber" : "text-muted";
+      tr.innerHTML = `
+        <td class="ticker-cell">${w.ticker}</td>
+        <td class="mono" style="font-size:11px">${w.theme}</td>
+        <td class="${statusClass}" style="font-weight:600;font-size:12px">${w.status}</td>
+        <td class="mono">${money(w.price)}</td>
+        <td class="mono">${money(w.trigger)}</td>
+        <td class="mono" style="font-size:11px">${Number(w.distance_to_entry_pct||0).toFixed(1)}%</td>
+        <td class="mono">${Number(w.score||0).toFixed(0)}</td>
+        <td><span class="grade-badge ${gradeClass(w.confidence_grade || 'C')}" style="transform: scale(0.85);">${w.confidence_grade || "C"}</span></td>
+        <td>
+          <div class="bar-cell">
+            <span class="mono" style="font-size:11px">${Number(w.momentum_score||0).toFixed(0)}</span>
+            <div class="mini-bar"><div class="mini-bar-fill ${barColor(w.momentum_score)}" style="width:${Math.min(100,w.momentum_score||0)}%"></div></div>
+          </div>
+        </td>
+        <td>
+          <div class="bar-cell">
+            <span class="mono" style="font-size:11px">${Number(w.rs_percentile||0).toFixed(0)}</span>
+            <div class="mini-bar"><div class="mini-bar-fill ${barColor(w.rs_percentile)}" style="width:${Math.min(100,w.rs_percentile||0)}%"></div></div>
+          </div>
+        </td>
+        <td class="mono" style="font-size:11px">${Number(w.accumulation_score||0).toFixed(0)}</td>
+        <td>${w.sector_aligned ? `<span class="sector-tag aligned">${w.sector}</span>` : `<span class="sector-tag">${w.sector||""}</span>`}</td>
+        <td class="mono" style="font-size:11px">${w.earnings_call || "?"}</td>
+        <td style="font-size:11px;max-width:200px;white-space:normal;color:var(--text-secondary)">${w.why||""}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderFilterFunnel(data) {
+    const grid = $("filter-grid");
+    // The stats from v3 scan come through as filter summary keys
+    // We look for the stats object in the scan data
+    const rawStats = data._filter_stats || {};
+
+    // Try to extract from the total_scanned and passed_count
+    const total = Number(data.total_scanned || 0);
+    const passed = Number(data.actionable_count || data.passed_count || 0);
+
+    // Build filter items from what we have
+    const items = [];
+    if (total > 0) items.push({name: "Total Scanned", count: total});
+    if (passed > 0) items.push({name: "Passed All Filters", count: passed});
+
+    // Look for filter breakdown in the data (v3 exports this in stats)
+    const knownFilters = [
+      "No Data", "Low Price/Liquidity", "Downtrend (Bear)", "No Setup (VCP/Dip)",
+      "Not Near High", "Gap Risk", "Regime Filter", "Rejected (Low Win%)",
+      "Rejected (Quality)", "Rejected (OOS)", "Rejected (WF)", "Rejected (Regime)",
+      "Precision Filter", "Research Only", "Too Far From Entry", "Unconfirmed Setup",
+      "Extended Above Entry", "Bad Risk/Reward", "Earnings Risk", "Sizing Constraint",
+      "Sector Filter", "Error", "Passed"
+    ];
+    // These may be in a flat stats dict
+    for (const key of Object.keys(data)) {
+      if (knownFilters.includes(key) && Number(data[key]) > 0) {
+        items.push({name: key, count: Number(data[key])});
+      }
+    }
+
+    if (items.length === 0) {
+      grid.innerHTML = '<div class="filter-item"><span class="name">Filter data populates after first scan</span></div>';
+      return;
+    }
+
+    grid.innerHTML = items.map(f =>
+      `<div class="filter-item"><span class="name">${f.name}</span><span class="count">${f.count}</span></div>`
+    ).join("");
+  }
+
+  // ---- WebSocket -------------------------------------------------------
+  function connectWS() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+    ws.onopen = () => {
+      $("ws-dot").classList.add("connected");
+      $("btn-scan").disabled = false;
+      startCountdown();
+    };
+
+    ws.onclose = () => {
+      $("ws-dot").classList.remove("connected");
+      $("btn-scan").disabled = true;
+      reconnectTimer = setTimeout(connectWS, 3000);
+    };
+
+    ws.onerror = () => { ws.close(); };
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+
+        if (msg.type === "state") {
+          isScanning = msg.is_scanning;
+          nextScanTime = msg.next_scan_time;
+          $("stat-scans").textContent = msg.scan_count || 0;
+          $("btn-scan").disabled = isScanning;
+          updateCountdown();
+        }
+
+        if (msg.type === "scan_result") {
+          scanResultCount++;
+          renderScanResult(msg.data);
+
+          // Auto-refresh: full page reload after scan completes (skip first load)
+          if (autoRefresh && scanResultCount > 1) {
+            // Brief flash to signal refresh, then reload
+            document.body.classList.add("refresh-flash");
+            setTimeout(() => location.reload(), 600);
+          }
+        }
+
+        if (msg.type === "scan_error") {
+          $("scan-status").textContent = `Error: ${msg.error}`;
+          $("scan-status").className = "scan-status";
+        }
+      } catch(err) {
+        console.error("WS parse error:", err);
+      }
+    };
+  }
+
+  window.requestScan = function() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({action: "scan_now"}));
+    }
+  };
+
+  window.toggleAutoRefresh = function() {
+    autoRefresh = !autoRefresh;
+    const btn = $("btn-auto");
+    btn.classList.toggle("active", autoRefresh);
+  };
+
+  // ---- Boot ------------------------------------------------------------
+  connectWS();
+
+  // Update "time ago" labels every 30s
+  setInterval(() => {
+    // re-render time ago from last scan data
+    const el = $("stat-last-scan");
+    if (el && el.dataset.iso) {
+      el.textContent = timeAgo(el.dataset.iso);
+    }
+  }, 30000);
+
+})();
+</script>
+
+</body>
+</html>
