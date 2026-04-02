@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Titan Trade — Live Scanner</title>
+<title>Titan Pro Scanner — Live</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 /* ============================================================
@@ -596,6 +596,55 @@ tbody tr.highlight-new {
   border-radius: var(--radius);
 }
 
+/* --- TIER BADGES ------------------------------------------------------- */
+.tier-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  display: inline-block;
+}
+.tier-VALIDATED { background: rgba(16, 185, 129, 0.2); color: var(--accent-green); }
+.tier-ACTIVE { background: rgba(34, 211, 238, 0.2); color: var(--accent-cyan); }
+.tier-OPPORTUNITY { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
+.tier-WATCHLIST { background: rgba(148, 163, 184, 0.15); color: var(--text-secondary); }
+
+/* Grade badges */
+.grade-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  display: inline-block;
+  min-width: 18px;
+  text-align: center;
+}
+.grade-a { background: rgba(16, 185, 129, 0.25); color: var(--accent-green); }
+.grade-b { background: rgba(59, 130, 246, 0.25); color: var(--accent-blue); }
+.grade-c { background: rgba(148, 163, 184, 0.15); color: var(--text-muted); }
+
+/* Signal type badges */
+.signal-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(167, 139, 250, 0.15);
+  color: var(--accent-purple);
+}
+
+/* Buy zone display */
+.buy-zone {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.buy-zone .bz-range { color: var(--accent-blue); }
+
 /* --- SCROLLBAR --------------------------------------------------------- */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -620,7 +669,7 @@ tbody tr.highlight-new {
 <!-- ================================================================== -->
 <div class="topbar">
   <div class="topbar-left">
-    <div class="logo">TITAN<span> TRADE</span></div>
+    <div class="logo">TITAN<span> PRO</span></div>
     <div id="market-pill" class="pill pill-neutral">
       <span class="pill-dot"></span>
       <span id="market-label">CONNECTING...</span>
@@ -649,14 +698,24 @@ tbody tr.highlight-new {
 <!-- ================================================================== -->
 <div class="stats-row">
   <div class="stat-card">
-    <div class="label">Actionable Setups</div>
-    <div class="value text-green" id="stat-actionable">--</div>
-    <div class="sub" id="stat-actionable-sub">waiting for scan</div>
+    <div class="label">Validated</div>
+    <div class="value text-green" id="stat-validated">--</div>
+    <div class="sub" id="stat-validated-sub">fresh, inside buy zone</div>
   </div>
   <div class="stat-card">
-    <div class="label">Research Names</div>
-    <div class="value text-blue" id="stat-research">--</div>
-    <div class="sub" id="stat-research-sub">watchlist</div>
+    <div class="label">Active</div>
+    <div class="value text-cyan" id="stat-active">--</div>
+    <div class="sub" id="stat-active-sub">1-2 bars old</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Opportunity</div>
+    <div class="value text-amber" id="stat-opportunity">--</div>
+    <div class="sub">extended but edge remains</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Watchlist</div>
+    <div class="value text-blue" id="stat-watchlist">--</div>
+    <div class="sub">not actionable yet</div>
   </div>
   <div class="stat-card">
     <div class="label">Market Regime</div>
@@ -690,48 +749,46 @@ tbody tr.highlight-new {
 </div>
 
 <!-- ================================================================== -->
-<!-- ACTIONABLE SETUPS                                                  -->
+<!-- VALIDATED + ACTIVE (Actionable Tiers)                              -->
 <!-- ================================================================== -->
-<div class="section" id="section-setups">
+<div class="section" id="section-actionable">
   <div class="section-header">
-    <span class="section-title">Buy Signals</span>
-    <span class="section-badge green" id="setup-count-badge">0</span>
+    <span class="section-title">Validated + Active Signals</span>
+    <span class="section-badge green" id="actionable-count-badge">0</span>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
           <th>Ticker</th>
-          <th>Action</th>
-          <th>Strategy</th>
-          <th>Grade</th>
-          <th>Entry / Stop / Target</th>
-          <th>Win%</th>
-          <th>PF</th>
-          <th>Mom</th>
-          <th>RS</th>
-          <th>Robustness</th>
-          <th>OOS</th>
-          <th>WF</th>
-          <th>Regime</th>
+          <th>Tier</th>
+          <th>Signal</th>
+          <th>Score</th>
+          <th>Price / Stop / Target</th>
+          <th>Buy Zone</th>
+          <th>R:R</th>
+          <th>RSI</th>
+          <th>Vol</th>
+          <th>Contraction</th>
+          <th>Dist High</th>
+          <th>Weekly</th>
           <th>Sector</th>
-          <th>Dist</th>
-          <th>Earn</th>
+          <th>Why</th>
         </tr>
       </thead>
-      <tbody id="setups-body">
-        <tr><td colspan="16" class="empty-state"><div class="icon">&#x1F50D;</div><p>Waiting for first scan...</p></td></tr>
+      <tbody id="actionable-body">
+        <tr><td colspan="14" class="empty-state"><div class="icon">&#x1F50D;</div><p>Waiting for first scan...</p></td></tr>
       </tbody>
     </table>
   </div>
 </div>
 
 <!-- ================================================================== -->
-<!-- RESEARCH WATCHLIST                                                  -->
+<!-- OPPORTUNITY + WATCHLIST                                             -->
 <!-- ================================================================== -->
 <div class="section" id="section-watchlist">
   <div class="section-header">
-    <span class="section-title">Research Watchlist</span>
+    <span class="section-title">Opportunity + Watchlist</span>
     <span class="section-badge" id="watch-count-badge">0</span>
   </div>
   <div class="table-wrap">
@@ -739,23 +796,56 @@ tbody tr.highlight-new {
       <thead>
         <tr>
           <th>Ticker</th>
-          <th>Theme</th>
-          <th>Status</th>
-          <th>Price</th>
-          <th>Trigger</th>
-          <th>Dist</th>
+          <th>Tier</th>
+          <th>Signal</th>
           <th>Score</th>
-          <th>Grade</th>
-          <th>Mom</th>
-          <th>RS</th>
-          <th>Acc</th>
-          <th>Sector</th>
-          <th>Earn</th>
+          <th>Price / Stop / Target</th>
+          <th>Buy Zone</th>
+          <th>RSI</th>
+          <th>Contraction</th>
+          <th>1D%</th>
+          <th>5D%</th>
+          <th>20D%</th>
+          <th>Weekly</th>
           <th>Why</th>
         </tr>
       </thead>
       <tbody id="watchlist-body">
-        <tr><td colspan="13" class="empty-state"><p>No research names yet</p></td></tr>
+        <tr><td colspan="13" class="empty-state"><p>No watchlist names yet</p></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- PREDICTIVE RADAR                                                   -->
+<!-- ================================================================== -->
+<div class="section" id="section-predictive">
+  <div class="section-header">
+    <span class="section-title">Predictive Radar -- Coiled Springs</span>
+    <span class="section-badge" id="pred-count-badge">0</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Direction</th>
+          <th>Score</th>
+          <th>Price</th>
+          <th>Trigger</th>
+          <th>Stop</th>
+          <th>Target</th>
+          <th>Risk%</th>
+          <th>RSI</th>
+          <th>VC</th>
+          <th>Weekly</th>
+          <th>Sector</th>
+          <th>Why</th>
+        </tr>
+      </thead>
+      <tbody id="predictive-body">
+        <tr><td colspan="13" class="empty-state"><p>No predictive candidates</p></td></tr>
       </tbody>
     </table>
   </div>
@@ -795,11 +885,13 @@ tbody tr.highlight-new {
   const money = v => `$${Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
   const pct = (v, d=1) => `${Number(v||0).toFixed(d)}%`;
 
-  function marketPillClass(status) {
-    const s = String(status||"").toUpperCase();
-    if (s.includes("STRONG_BULL") || s.includes("BULL")) return "pill-bull";
-    if (s.includes("BEAR") || s.includes("PANIC")) return "pill-bear";
-    if (s.includes("CORRECTION") || s.includes("FEAR")) return "pill-correction";
+  function regimeClass(regime) {
+    const s = String(regime||"").toUpperCase();
+    if (s.includes("STRONG_BULL")) return "pill-bull";
+    if (s.includes("BULL")) return "pill-bull";
+    if (s.includes("STRONG_BEAR")) return "pill-bear";
+    if (s.includes("BEAR")) return "pill-bear";
+    if (s.includes("SIDEWAYS")) return "pill-correction";
     return "pill-neutral";
   }
 
@@ -809,31 +901,6 @@ tbody tr.highlight-new {
     if (v <= 22) return "";
     if (v <= 30) return "vix-mid";
     return "vix-high";
-  }
-
-  function actionClass(action) {
-    const a = String(action||"").toUpperCase();
-    if (a.includes("BUY")) return "action-buy";
-    if (a.includes("PILOT")) return "action-pilot";
-    return "action-watch";
-  }
-
-  function gradeClass(g) { return `grade-${String(g||"F").toUpperCase()}`; }
-
-  function alertClass(state) {
-    const s = String(state||"").toUpperCase();
-    if (s === "ACTIONABLE") return "alert-actionable";
-    if (s === "RESEARCH") return "alert-research";
-    if (s === "DEFENSIVE") return "alert-defensive";
-    return "alert-quiet";
-  }
-
-  function barColor(v) {
-    v = Number(v||0);
-    if (v >= 70) return "bar-green";
-    if (v >= 50) return "bar-blue";
-    if (v >= 30) return "bar-amber";
-    return "bar-red";
   }
 
   function timeAgo(iso) {
@@ -884,36 +951,41 @@ tbody tr.highlight-new {
     statusEl.className = "scan-status";
   }
 
-  // ---- Render: Scan Results --------------------------------------------
+  // ---- Render: Pro Scan Results ----------------------------------------
   function renderScanResult(data) {
     if (!data) return;
 
-    const actionable = Number(data.actionable_count ?? (data.setups||[]).length);
-    const research = Number(data.research_watchlist_count ?? data.watchlist_count ?? (data.research_watchlist||[]).length);
-    const mktStatus = data.market_status || "UNKNOWN";
-    const vix = data.vix_level;
+    const validated = data.validated || [];
+    const active = data.active || [];
+    const opportunity = data.opportunity || [];
+    const watchlist = data.watchlist || [];
+    const predictiveRadar = data.predictive_radar || [];
+    const regime = data.regime || "UNKNOWN";
+    const vix = data.vix;
+    const adx = data.adx;
+    const marketScore = data.market_score;
     const topSectors = data.top_sectors || [];
-    const oppState = data.opportunity_state || "QUIET";
-    const oppHeadline = data.opportunity_headline || "";
-    const oppDetail = data.opportunity_detail || "";
+    const stalkOrders = data.stalk_orders || [];
 
     // Topbar
     const mp = $("market-pill");
-    mp.className = `pill ${marketPillClass(mktStatus)}`;
-    $("market-label").textContent = mktStatus;
+    mp.className = `pill ${regimeClass(regime)}`;
+    $("market-label").textContent = regime;
 
     const vp = $("vix-pill");
     vp.textContent = vix != null ? `VIX ${Number(vix).toFixed(1)}` : "VIX --";
     vp.className = `vix-pill ${vixClass(vix)}`;
 
     // Stats
-    $("stat-actionable").textContent = actionable;
-    $("stat-actionable-sub").textContent = actionable === 1 ? "setup ready" : "setups ready";
-    $("stat-research").textContent = research;
-    $("stat-research-sub").textContent = "watchlist";
-    $("stat-regime").textContent = mktStatus;
-    $("stat-regime").className = `value ${marketPillClass(mktStatus).replace("pill-","text-")}`;
-    $("stat-regime-sub").textContent = vix != null ? `VIX ${Number(vix).toFixed(1)}` : "";
+    $("stat-validated").textContent = validated.length;
+    $("stat-active").textContent = active.length;
+    $("stat-opportunity").textContent = opportunity.length;
+    $("stat-watchlist").textContent = watchlist.length;
+    $("stat-regime").textContent = regime;
+    $("stat-regime").className = `value ${regimeClass(regime).replace("pill-","text-")}`;
+    $("stat-regime-sub").textContent = (vix != null ? `VIX ${Number(vix).toFixed(1)}` : "") +
+      (adx ? ` | ADX ${Number(adx).toFixed(0)}` : "") +
+      (marketScore ? ` | Breadth ${Number(marketScore).toFixed(0)}%` : "");
 
     // Sectors
     const sc = $("sector-chips");
@@ -928,35 +1000,49 @@ tbody tr.highlight-new {
 
     // Alert banner
     const ab = $("alert-banner");
-    ab.className = `alert-banner visible ${alertClass(oppState)}`;
-    ab.innerHTML = `<strong>${oppState}</strong> &mdash; ${oppHeadline}`;
+    const totalActionable = validated.length + active.length;
+    if (totalActionable > 0) {
+      ab.className = "alert-banner visible alert-actionable";
+      ab.innerHTML = `<strong>${totalActionable} ACTIONABLE</strong> &mdash; ${validated.length} validated + ${active.length} active signals. Place stalk orders and sleep.`;
+    } else if (opportunity.length > 0) {
+      ab.className = "alert-banner visible alert-research";
+      ab.innerHTML = `<strong>RESEARCH</strong> &mdash; ${opportunity.length} opportunities found but entries may be extended. Monitor for pullbacks.`;
+    } else if (watchlist.length > 0) {
+      ab.className = "alert-banner visible alert-quiet";
+      ab.innerHTML = `<strong>QUIET</strong> &mdash; ${watchlist.length} names on watchlist. No actionable setups tonight.`;
+    } else {
+      ab.className = "alert-banner visible alert-quiet";
+      ab.innerHTML = `<strong>QUIET</strong> &mdash; No setups found. Cash is a position.`;
+    }
 
     // Stalk orders
-    const stalkOrders = data.stalk_orders || [];
     $("stalk-count-badge").textContent = stalkOrders.length;
     renderStalkOrders(stalkOrders);
 
-    // Setups table
-    const setups = data.setups || [];
-    const newTickers = new Set(setups.map(s => s.ticker));
-    $("setup-count-badge").textContent = setups.length;
-    renderSetupsTable(setups, newTickers);
+    // Actionable table (validated + active)
+    const actionableItems = [...validated, ...active];
+    $("actionable-count-badge").textContent = actionableItems.length;
+    renderActionableTable(actionableItems);
 
     // Check for new signals
+    const newTickers = new Set(actionableItems.map(s => s.ticker));
     if (previousTickers.size > 0) {
-      const brandNew = setups.filter(s => !previousTickers.has(s.ticker));
+      const brandNew = actionableItems.filter(s => !previousTickers.has(s.ticker));
       if (brandNew.length > 0) {
         playNotificationSound();
-        document.title = `(${brandNew.length} NEW) Titan Trade`;
-        setTimeout(() => { document.title = "Titan Trade — Live Scanner"; }, 10000);
+        document.title = `(${brandNew.length} NEW) Titan Pro`;
+        setTimeout(() => { document.title = "Titan Pro Scanner — Live"; }, 10000);
       }
     }
     previousTickers = newTickers;
 
-    // Watchlist table
-    const watchlist = data.research_watchlist || data.watchlist || [];
-    $("watch-count-badge").textContent = watchlist.length;
-    renderWatchlistTable(watchlist);
+    // Watchlist table (opportunity + watchlist)
+    const watchItems = [...opportunity, ...watchlist];
+    $("watch-count-badge").textContent = watchItems.length;
+    renderWatchlistTable(watchItems);
+
+    // Predictive radar
+    renderPredictiveRadar(predictiveRadar);
 
     // Filter funnel
     renderFilterFunnel(data);
@@ -965,7 +1051,7 @@ tbody tr.highlight-new {
   function renderStalkOrders(orders) {
     const grid = $("stalk-grid");
     if (!orders.length) {
-      grid.innerHTML = '<div class="stalk-empty">No stalk candidates in this scan — check back next cycle</div>';
+      grid.innerHTML = '<div class="stalk-empty">No stalk orders in this scan -- check back next cycle</div>';
       return;
     }
     grid.innerHTML = "";
@@ -974,13 +1060,15 @@ tbody tr.highlight-new {
       card.className = "stalk-card";
       card.innerHTML = `
         <div class="stalk-card-header">
-          <span class="stalk-ticker">${o.symbol}</span>
+          <span class="stalk-ticker">${o.ticker}</span>
+          <span class="grade-badge grade-${(o.grade||'C').toLowerCase()}">${o.grade||'C'}</span>
+          <span class="signal-badge">${o.signal_type||""}</span>
           <span class="stalk-badge">STALK</span>
         </div>
         <div class="stalk-levels">
           <div class="stalk-level sl-entry">
             <div class="sl-label">Limit Buy</div>
-            <div class="sl-price">${money(o.pivot_price)}</div>
+            <div class="sl-price">${money(o.limit_price)}</div>
           </div>
           <div class="stalk-level sl-stop">
             <div class="sl-label">Stop Loss</div>
@@ -994,76 +1082,50 @@ tbody tr.highlight-new {
         <div class="stalk-meta">
           <div class="sm-item">Shares: <span class="sm-val">${o.qty}</span></div>
           <div class="sm-item">Risk: <span class="sm-val">$${Number(o.risk_dollars||0).toFixed(0)}</span></div>
-          <div class="sm-item">Sector: <span class="sm-val">${o.sector||"--"}</span></div>
-          ${o.score ? `<div class="sm-item">Score: <span class="sm-val">${Number(o.score).toFixed(0)}</span></div>` : ""}
-          ${o.rs_percentile ? `<div class="sm-item">RS: <span class="sm-val">${Number(o.rs_percentile).toFixed(0)}</span></div>` : ""}
+          <div class="sm-item">Zone: <span class="sm-val">${o.buy_zone||"--"}</span></div>
+          <div class="sm-item">Time Stop: <span class="sm-val">${o.time_stop_days||"--"}D</span></div>
+          <div class="sm-item">Score: <span class="sm-val">${Number(o.trade_score||0).toFixed(1)}</span></div>
         </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--text-muted)">${o.entry_note||""}</div>
       `;
       grid.appendChild(card);
     });
   }
 
-  function renderSetupsTable(setups, newTickers) {
-    const tbody = $("setups-body");
-    if (!setups.length) {
-      tbody.innerHTML = '<tr><td colspan="16" class="empty-state"><p>No actionable setups in this scan</p></td></tr>';
+  function renderActionableTable(items) {
+    const tbody = $("actionable-body");
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="14" class="empty-state"><p>No actionable setups in this scan</p></td></tr>';
       return;
     }
     tbody.innerHTML = "";
-    setups.forEach(s => {
-      const isNew = !previousTickers.has(s.ticker);
+    items.forEach(s => {
       const tr = document.createElement("tr");
+      const isNew = !previousTickers.has(s.ticker);
       if (isNew) tr.className = "highlight-new";
-
-      const oosPf = Number(s.oos_pf||0);
-      const oosN = Number(s.oos_trades||0);
-      const wfPf = Number(s.walk_forward_pf||0);
-      const wfPr = Number(s.walk_forward_pass_rate||0);
-      const regS = Number(s.regime_score||0);
-      const rob = Number(s.robustness_score||0);
-      const dist = Number(s.distance_to_entry_pct||0);
 
       tr.innerHTML = `
         <td class="ticker-cell">${s.ticker}</td>
-        <td><span class="action-cell ${actionClass(s.action)}">${s.action||s.confirmation_status||"WATCH"}</span></td>
-        <td class="mono" style="font-size:11px">${s.strategy}</td>
-        <td><span class="grade-badge ${gradeClass(s.confidence_grade)}">${s.confidence_grade}</span></td>
+        <td><span class="tier-badge tier-${s.tier}">${s.tier}</span></td>
+        <td><span class="grade-badge grade-${(s.grade||'C').toLowerCase()}">${s.grade||'C'}</span> <span class="signal-badge">${s.signal_type}</span></td>
+        <td class="mono text-green" style="font-weight:700">${Number(s.trade_score||0).toFixed(1)}</td>
         <td>
           <div class="price-levels">
-            <span class="entry">${money(s.trigger)}</span>
+            <span class="entry">${money(s.price)}</span>
             <span class="stop">${money(s.stop)}</span>
             <span class="target">${money(s.target)}</span>
           </div>
         </td>
-        <td class="mono">${pct(s.win_rate)}</td>
-        <td class="mono">${Number(s.profit_factor||0).toFixed(2)}</td>
-        <td>
-          <div class="bar-cell">
-            <span class="mono" style="font-size:11px">${Number(s.momentum_score||0).toFixed(0)}</span>
-            <div class="mini-bar"><div class="mini-bar-fill ${barColor(s.momentum_score)}" style="width:${Math.min(100,s.momentum_score||0)}%"></div></div>
-          </div>
-        </td>
-        <td>
-          <div class="bar-cell">
-            <span class="mono" style="font-size:11px">${Number(s.rs_percentile||0).toFixed(0)}</span>
-            <div class="mini-bar"><div class="mini-bar-fill ${barColor(s.rs_percentile)}" style="width:${Math.min(100,s.rs_percentile||0)}%"></div></div>
-          </div>
-        </td>
-        <td>
-          <div class="bar-cell">
-            <span class="mono" style="font-size:11px">${rob.toFixed(0)}</span>
-            <div class="mini-bar"><div class="mini-bar-fill ${barColor(rob)}" style="width:${Math.min(100,rob)}%"></div></div>
-          </div>
-        </td>
-        <td class="mono" style="font-size:11px">${oosN > 0 ? `${oosPf.toFixed(2)}/${oosN}` : "--"}</td>
-        <td class="mono" style="font-size:11px">${wfPf > 0 ? `${wfPf.toFixed(2)}/${pct(wfPr*100,0)}` : "--"}</td>
-        <td class="mono" style="font-size:11px">${pct(regS*100,0)}</td>
-        <td>${s.sector_aligned ? `<span class="sector-tag aligned">${s.sector}</span>` : `<span class="sector-tag">${s.sector||""}</span>`}</td>
-        <td class="mono ${dist > 2 ? "text-amber" : dist > 0 ? "text-muted" : "text-green"}" style="font-size:11px">${dist > 0 ? `+${dist.toFixed(1)}%` : `${dist.toFixed(1)}%`}</td>
-        <td class="mono" style="font-size:11px">${s.earnings_call || "?"}</td>
+        <td class="buy-zone"><span class="bz-range">${money(s.buy_zone_low)} - ${money(s.buy_zone_high)}</span></td>
+        <td class="mono">${Number(s.rr_ratio||0).toFixed(1)}</td>
+        <td class="mono">${Number(s.rsi||0).toFixed(0)}</td>
+        <td class="mono">${Number(s.volume_ratio||0).toFixed(1)}x</td>
+        <td class="mono ${Number(s.vol_contraction||1) < 0.6 ? 'text-green' : ''}">${Number(s.vol_contraction||0).toFixed(2)}</td>
+        <td class="mono">${Number(s.dist_from_high||0).toFixed(1)}%</td>
+        <td class="mono" style="font-size:11px">${s.weekly_trend||"--"}</td>
+        <td><span class="sector-tag">${s.sector||""}</span></td>
+        <td style="font-size:11px;max-width:200px;white-space:normal;color:var(--text-secondary)">${(s.reasons||[]).join(" | ")}</td>
       `;
-
-      // Click to expand detail
       tr.style.cursor = "pointer";
       tr.addEventListener("click", () => toggleDetail(tr, s));
       tbody.appendChild(tr);
@@ -1078,60 +1140,88 @@ tbody tr.highlight-new {
     }
     const detail = document.createElement("tr");
     detail.className = "detail-row";
-    detail.innerHTML = `<td colspan="16">
+    detail.innerHTML = `<td colspan="14">
       <div class="detail-content">
-        <div class="detail-item"><div class="label">Pre-Breakout</div><div class="val">${Number(s.pre_breakout_score||0).toFixed(0)}</div></div>
-        <div class="detail-item"><div class="label">Expectancy</div><div class="val">${Number(s.net_expectancy||0).toFixed(4)}</div></div>
-        <div class="detail-item"><div class="label">Starter Trigger</div><div class="val">${money(s.starter_trigger)}</div></div>
-        <div class="detail-item"><div class="label">Add-On Trigger</div><div class="val">${Number(s.add_on_trigger||0) > 0 ? money(s.add_on_trigger) : "--"}</div></div>
-        <div class="detail-item"><div class="label">Partial Target</div><div class="val">${Number(s.partial_target||0) > 0 ? money(s.partial_target) : "--"}</div></div>
-        <div class="detail-item"><div class="label">Starter Qty</div><div class="val">${s.starter_qty || s.qty || "--"}</div></div>
-        <div class="detail-item"><div class="label">Total Plan</div><div class="val">${s.planned_total_qty || "--"}</div></div>
-        <div class="detail-item"><div class="label">Add-On Qty</div><div class="val">${Number(s.add_on_qty||0) > 0 ? s.add_on_qty : "--"}</div></div>
-        <div class="detail-item"><div class="label">Position Scalar</div><div class="val">${Number(s.position_size_scalar||1).toFixed(2)}x</div></div>
-        <div class="detail-item"><div class="label">Tier</div><div class="val">${s.opportunity_tier || "VALIDATED"}</div></div>
-        <div class="detail-item"><div class="label">From 52w High</div><div class="val">${Number(s.distance_from_high_pct||0).toFixed(1)}%</div></div>
-        <div class="detail-item"><div class="label">Entry Ready</div><div class="val">${Number(s.entry_ready_score||0).toFixed(0)}</div></div>
+        <div class="detail-item"><div class="label">Signal Type</div><div class="val">${s.signal_type||"--"}</div></div>
+        <div class="detail-item"><div class="label">Signal Strength</div><div class="val">${Number(s.signal_strength||0).toFixed(1)}</div></div>
+        <div class="detail-item"><div class="label">Trade Score</div><div class="val">${Number(s.trade_score||0).toFixed(1)}</div></div>
+        <div class="detail-item"><div class="label">Signal Age</div><div class="val">${s.signal_age||0} bars</div></div>
+        <div class="detail-item"><div class="label">Entry Style</div><div class="val">${s.entry_style||"--"}</div></div>
+        <div class="detail-item"><div class="label">Max Buy Price</div><div class="val">${money(s.max_buy_price)}</div></div>
+        <div class="detail-item"><div class="label">Cancel Above</div><div class="val">+${Number(s.cancel_above_pct||0).toFixed(1)}%</div></div>
+        <div class="detail-item"><div class="label">Time Stop</div><div class="val">${s.time_stop_days||"--"} days</div></div>
+        <div class="detail-item"><div class="label">Gap Risk</div><div class="val">${s.gap_risk||"--"}</div></div>
+        <div class="detail-item"><div class="label">Qty</div><div class="val">${s.qty||"--"}</div></div>
+        <div class="detail-item"><div class="label">Risk $</div><div class="val">$${Number(s.risk_dollars||0).toFixed(0)}</div></div>
+        <div class="detail-item"><div class="label">1D / 5D / 20D</div><div class="val">${Number(s.change_1d||0).toFixed(1)}% / ${Number(s.change_5d||0).toFixed(1)}% / ${Number(s.change_20d||0).toFixed(1)}%</div></div>
       </div>
+      <div style="padding:8px 20px 14px;font-size:12px;color:var(--text-muted)">${s.entry_note||""}</div>
     </td>`;
     tr.after(detail);
   }
 
-  function renderWatchlistTable(watchlist) {
+  function renderWatchlistTable(items) {
     const tbody = $("watchlist-body");
-    if (!watchlist.length) {
-      tbody.innerHTML = '<tr><td colspan="14" class="empty-state"><p>No research names in this scan</p></td></tr>';
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="13" class="empty-state"><p>No watchlist names in this scan</p></td></tr>';
       return;
     }
     tbody.innerHTML = "";
-    watchlist.forEach(w => {
+    items.forEach(s => {
       const tr = document.createElement("tr");
-      const statusClass = w.status === "STALK" ? "text-amber" : "text-muted";
       tr.innerHTML = `
-        <td class="ticker-cell">${w.ticker}</td>
-        <td class="mono" style="font-size:11px">${w.theme}</td>
-        <td class="${statusClass}" style="font-weight:600;font-size:12px">${w.status}</td>
-        <td class="mono">${money(w.price)}</td>
-        <td class="mono">${money(w.trigger)}</td>
-        <td class="mono" style="font-size:11px">${Number(w.distance_to_entry_pct||0).toFixed(1)}%</td>
-        <td class="mono">${Number(w.score||0).toFixed(0)}</td>
-        <td><span class="grade-badge ${gradeClass(w.confidence_grade || 'C')}" style="transform: scale(0.85);">${w.confidence_grade || "C"}</span></td>
+        <td class="ticker-cell">${s.ticker}</td>
+        <td><span class="tier-badge tier-${s.tier}">${s.tier}</span></td>
+        <td><span class="signal-badge">${s.signal_type}</span></td>
+        <td class="mono">${Number(s.trade_score||0).toFixed(1)}</td>
         <td>
-          <div class="bar-cell">
-            <span class="mono" style="font-size:11px">${Number(w.momentum_score||0).toFixed(0)}</span>
-            <div class="mini-bar"><div class="mini-bar-fill ${barColor(w.momentum_score)}" style="width:${Math.min(100,w.momentum_score||0)}%"></div></div>
+          <div class="price-levels">
+            <span class="entry">${money(s.price)}</span>
+            <span class="stop">${money(s.stop)}</span>
+            <span class="target">${money(s.target)}</span>
           </div>
         </td>
-        <td>
-          <div class="bar-cell">
-            <span class="mono" style="font-size:11px">${Number(w.rs_percentile||0).toFixed(0)}</span>
-            <div class="mini-bar"><div class="mini-bar-fill ${barColor(w.rs_percentile)}" style="width:${Math.min(100,w.rs_percentile||0)}%"></div></div>
-          </div>
-        </td>
-        <td class="mono" style="font-size:11px">${Number(w.accumulation_score||0).toFixed(0)}</td>
-        <td>${w.sector_aligned ? `<span class="sector-tag aligned">${w.sector}</span>` : `<span class="sector-tag">${w.sector||""}</span>`}</td>
-        <td class="mono" style="font-size:11px">${w.earnings_call || "?"}</td>
-        <td style="font-size:11px;max-width:200px;white-space:normal;color:var(--text-secondary)">${w.why||""}</td>
+        <td class="buy-zone"><span class="bz-range">${money(s.buy_zone_low)} - ${money(s.buy_zone_high)}</span></td>
+        <td class="mono">${Number(s.rsi||0).toFixed(0)}</td>
+        <td class="mono ${Number(s.vol_contraction||1) < 0.6 ? 'text-green' : ''}">${Number(s.vol_contraction||0).toFixed(2)}</td>
+        <td class="mono">${Number(s.change_1d||0).toFixed(1)}%</td>
+        <td class="mono">${Number(s.change_5d||0).toFixed(1)}%</td>
+        <td class="mono">${Number(s.change_20d||0).toFixed(1)}%</td>
+        <td class="mono" style="font-size:11px">${s.weekly_trend||"--"}</td>
+        <td style="font-size:11px;max-width:200px;white-space:normal;color:var(--text-secondary)">${(s.reasons||[]).join(" | ")}</td>
+      `;
+      tr.style.cursor = "pointer";
+      tr.addEventListener("click", () => toggleDetail(tr, s));
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderPredictiveRadar(items) {
+    const tbody = $("predictive-body");
+    const badge = $("pred-count-badge");
+    badge.textContent = items.length;
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="13" class="empty-state"><p>No predictive candidates</p></td></tr>';
+      return;
+    }
+    tbody.innerHTML = "";
+    items.forEach(r => {
+      const tr = document.createElement("tr");
+      const dirClass = r.direction === "UP" ? "text-green" : (r.direction === "DOWN" ? "text-red" : "");
+      tr.innerHTML = `
+        <td class="ticker-cell">${r.ticker}</td>
+        <td class="${dirClass}" style="font-weight:600">${r.direction}</td>
+        <td class="mono text-green" style="font-weight:700">${Number(r.pred_score||0).toFixed(1)}</td>
+        <td class="mono">${money(r.price)}</td>
+        <td class="mono" style="color:var(--accent-cyan)">${money(r.trigger)}</td>
+        <td class="mono" style="color:var(--accent-red)">${money(r.stop)}</td>
+        <td class="mono" style="color:var(--accent-green)">${money(r.target)}</td>
+        <td class="mono">${Number(r.risk_pct||0).toFixed(1)}%</td>
+        <td class="mono">${Number(r.rsi||0).toFixed(0)}</td>
+        <td class="mono ${Number(r.vol_contraction||1) < 0.6 ? 'text-green' : ''}">${Number(r.vol_contraction||0).toFixed(2)}</td>
+        <td class="mono" style="font-size:11px">${r.weekly_trend||"--"}</td>
+        <td><span class="sector-tag">${r.sector||""}</span></td>
+        <td style="font-size:11px;max-width:200px;white-space:normal;color:var(--text-secondary)">${(r.pred_reasons||[]).join(" | ")}</td>
       `;
       tbody.appendChild(tr);
     });
@@ -1139,40 +1229,30 @@ tbody tr.highlight-new {
 
   function renderFilterFunnel(data) {
     const grid = $("filter-grid");
-    // The stats from v3 scan come through as filter summary keys
-    // We look for the stats object in the scan data
-    const rawStats = data._filter_stats || {};
-
-    // Try to extract from the total_scanned and passed_count
-    const total = Number(data.total_scanned || 0);
-    const passed = Number(data.actionable_count || data.passed_count || 0);
-
-    // Build filter items from what we have
     const items = [];
-    if (total > 0) items.push({name: "Total Scanned", count: total});
-    if (passed > 0) items.push({name: "Passed All Filters", count: passed});
+    const total = Number(data.total_scanned || 0);
+    const signals = Number(data.total_signals || 0);
+    const validated = (data.validated||[]).length;
+    const active = (data.active||[]).length;
+    const opportunity = (data.opportunity||[]).length;
+    const watchlist = (data.watchlist||[]).length;
+    const scanTime = data.scan_time;
 
-    // Look for filter breakdown in the data (v3 exports this in stats)
-    const knownFilters = [
-      "No Data", "Low Price/Liquidity", "Downtrend (Bear)", "No Setup (VCP/Dip)",
-      "Not Near High", "Gap Risk", "Regime Filter", "Rejected (Low Win%)",
-      "Rejected (Quality)", "Rejected (OOS)", "Rejected (WF)", "Rejected (Regime)",
-      "Precision Filter", "Research Only", "Too Far From Entry", "Unconfirmed Setup",
-      "Extended Above Entry", "Bad Risk/Reward", "Earnings Risk", "Sizing Constraint",
-      "Sector Filter", "Error", "Passed"
-    ];
-    // These may be in a flat stats dict
-    for (const key of Object.keys(data)) {
-      if (knownFilters.includes(key) && Number(data[key]) > 0) {
-        items.push({name: key, count: Number(data[key])});
-      }
-    }
+    const predictive = Number(data.total_predictive || 0);
+
+    if (total > 0) items.push({name: "Total Scanned", count: total});
+    if (signals > 0) items.push({name: "Signals Detected", count: signals});
+    if (predictive > 0) items.push({name: "Predictive Candidates", count: predictive});
+    if (validated > 0) items.push({name: "Validated", count: validated});
+    if (active > 0) items.push({name: "Active", count: active});
+    if (opportunity > 0) items.push({name: "Opportunity", count: opportunity});
+    if (watchlist > 0) items.push({name: "Watchlist", count: watchlist});
+    if (scanTime) items.push({name: "Scan Time", count: `${scanTime}s`});
 
     if (items.length === 0) {
       grid.innerHTML = '<div class="filter-item"><span class="name">Filter data populates after first scan</span></div>';
       return;
     }
-
     grid.innerHTML = items.map(f =>
       `<div class="filter-item"><span class="name">${f.name}</span><span class="count">${f.count}</span></div>`
     ).join("");

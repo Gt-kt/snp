@@ -56,7 +56,7 @@ class NotificationManager:
                         return True
                     except Exception:
                         pass
-                print(f"\n🔔 {title}: {message}\n")
+                print(f"\n[!] {title}: {message}\n")
                 return True
         except Exception as e:
             print(f"Notification failed: {e}")

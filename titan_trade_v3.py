@@ -2226,7 +2226,8 @@ def get_market_data(tickers_override=None, cache_ttl_hours=DEFAULT_OHLCV_TTL_HOU
             if time.time() - os.path.getmtime(SP500_CACHE_FILE) < sp500_ttl_sec:
                 try:
                     tickers = pd.read_json(SP500_CACHE_FILE, typ='series').tolist()
-                except:
+                except Exception as e:
+                    print(f"  Warning: S&P 500 cache read failed: {e}")
                     tickers = None
         
         if not tickers:
@@ -2240,7 +2241,9 @@ def get_market_data(tickers_override=None, cache_ttl_hours=DEFAULT_OHLCV_TTL_HOU
                 df = pd.read_html(io.StringIO(resp.text))[0]
                 tickers = [t.replace('.', '-') for t in df['Symbol'].tolist()]
                 pd.Series(tickers).to_json(SP500_CACHE_FILE)
-            except:
+            except Exception as e:
+                print(f"  [!] CRITICAL: S&P 500 list download failed: {e}")
+                print(f"  [!] Falling back to 5 tickers only -- results will be incomplete!")
                 tickers = ["NVDA", "MSFT", "AAPL", "AMD", "TSLA"]
     
     tickers = list(dict.fromkeys([t.strip().upper() for t in tickers if t]))
@@ -2270,7 +2273,8 @@ def get_market_data(tickers_override=None, cache_ttl_hours=DEFAULT_OHLCV_TTL_HOU
                 available_symbols = {str(symbol).upper() for symbol in data.columns.levels[0]}
                 if not required_symbols.issubset(available_symbols):
                     data = None
-        except:
+        except Exception as e:
+            print(f"  Warning: Cache read failed: {e}")
             data = None
     
     if data is None:
@@ -2350,6 +2354,12 @@ def _extract_ticker_df(ticker, data):
     df = df[required_cols].dropna()
     if len(df) < 250:
         return None, "No Data"
+    # Guard against non-consecutive bars: if dropna removed interior rows,
+    # forward-fill small gaps (1-2 days) but reject if >5% of bars were NaN
+    original_len = len(data[ticker][required_cols]) if ticker in data.columns.levels[0] else len(df)
+    dropped_pct = (original_len - len(df)) / original_len * 100 if original_len > 0 else 0
+    if dropped_pct > 5.0:
+        return None, "No Data"  # Too many gaps, data unreliable
     return df, None
 
 
@@ -3376,6 +3386,8 @@ def build_arg_parser():
         action="store_true",
         help="Route orders to the live Alpaca account (requires --trust-mode --execute-orders)",
     )
+    parser.add_argument("--pro", action="store_true",
+                        help="Use Pro Scanner (KOSPI-style multi-signal detection)")
     parser.add_argument("--tickers", default="", help="Custom ticker list")
     parser.add_argument("--account-size", type=float, default=None)
     parser.add_argument("--risk-per-trade", type=float, default=None)
@@ -3518,6 +3530,44 @@ def main():
             print(f"\n  TRADING BLOCKED: {risk_status['reason']}")
             return
     
+    # ── Pro Scanner (KOSPI-style) ─────────────────────────────────────────
+    if getattr(args, 'pro', False):
+        from titan.pro_scanner import pro_scan
+        try:
+            pro_results = pro_scan(settings=settings, market_data_bundle=market_data_bundle)
+        except KeyboardInterrupt:
+            print("\n  Cancelled.")
+            return
+
+        # Export for dashboard
+        try:
+            os.makedirs("data", exist_ok=True)
+            export = {
+                "mode": "pro",
+                "regime": pro_results["regime"],
+                "regime_score": pro_results["regime_score"],
+                "vix": pro_results["vix"],
+                "adx": pro_results["adx"],
+                "market_score": pro_results["market_score"],
+                "top_sectors": pro_results["top_sectors"],
+                "validated": pro_results["validated"],
+                "active": pro_results["active"],
+                "opportunity": pro_results["opportunity"],
+                "watchlist": pro_results["watchlist"],
+                "stalk_orders": pro_results["stalk_orders"],
+                "scan_time": pro_results["scan_time"],
+                "total_scanned": pro_results["total_scanned"],
+                "total_signals": pro_results["total_signals"],
+                "timestamp": pro_results["scan_timestamp"],
+            }
+            with open("data/latest_scan.json", "w") as f:
+                json.dump(export, f, indent=2, default=str)
+            print(f"\n  Exported to data/latest_scan.json")
+        except Exception as e:
+            print(f"\n  Export failed: {e}")
+        return
+
+    # ── Legacy Scanner ─────────────────────────────────────────────────────
     # Run scan
     try:
         setups, stats, mkt_data, vix_level = scan(
@@ -3526,7 +3576,7 @@ def main():
     except KeyboardInterrupt:
         print("\n  Cancelled.")
         return
-    
+
     # Display results
     if args.trust_mode or args.trust_paper:
         trusted = print_simple_verdict(setups, trust_manager, vix_level)

@@ -1,14 +1,14 @@
 """
-Titan Trade v9.0 - Real-Time Dashboard
-=======================================
-Live-streaming S&P 500 scanner dashboard.
-Runs v3's scan() on a background loop and pushes results to connected
-clients via WebSocket.
+Titan Pro Scanner -- Live Dashboard
+====================================
+Real-time S&P 500 scanner dashboard powered by the Pro Scanner
+(KOSPI-architecture multi-signal detection).
 
 Usage:
     python titan_dashboard.py                    # default 15-min scan interval
-    python titan_dashboard.py --interval 10      # 10-min interval
+    python titan_dashboard.py --interval 5       # 5-min interval
     python titan_dashboard.py --port 8080        # custom port
+    python titan_dashboard.py --host 0.0.0.0     # bind to all interfaces
 """
 
 import asyncio
@@ -31,29 +31,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Import v3 scanner directly – no duplication of logic
+# Import pro scanner + v3 utilities
 # ---------------------------------------------------------------------------
-from titan_trade_v3 import (
-    scan,
-    build_runtime_settings,
-    build_arg_parser,
-    load_open_positions_snapshot,
-    load_managed_portfolio,
-    manual_action_label,
-    generate_stalk_orders,
-)
-from titan.opportunity import (
-    build_scan_export_data,
-    normalize_scan_payload,
-)
+from titan.pro_scanner import pro_scan
 from titan.alpaca_executor import AlpacaExecutor
-from titan import (
-    MarketHours,
-    AutoModeManager,
-    TrustModeManager,
-    PortfolioRiskManager,
-    ACCOUNT_SIZE,
-)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -116,7 +97,7 @@ state = DashboardState()
 async def broadcast(message: dict):
     """Send a JSON message to every connected WebSocket client."""
     dead = []
-    payload = json.dumps(message)
+    payload = json.dumps(message, default=str)
     for ws in state.connected_clients:
         try:
             await ws.send_text(payload)
@@ -127,36 +108,38 @@ async def broadcast(message: dict):
 
 
 # ---------------------------------------------------------------------------
-# Scanner – runs v3 scan() in a thread so it doesn't block the event loop
+# Scanner – runs pro_scan() in a thread so it doesn't block the event loop
 # ---------------------------------------------------------------------------
-def _build_default_settings() -> dict:
-    """Create scan settings from defaults (no CLI args)."""
-    parser = build_arg_parser()
-    args = parser.parse_args([])
-    auto_manager = AutoModeManager()
-    return build_runtime_settings(args, auto_manager, logger)
-
-
 def _run_scan_sync(settings: dict) -> dict:
-    """Execute a full v3 scan (blocking). Returns export-ready dict."""
-    setups, stats, mkt_data, vix_level = scan(settings=settings)
-    export = build_scan_export_data(
-        setups,
-        stats,
-        mkt_data,
-        vix_level=vix_level,
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        action_labeler=manual_action_label,
-    )
-    # Generate stalk orders from STALK watchlist candidates
-    watchlist = export.get("watchlist") or export.get("research_watchlist") or []
-    stalk_items = [w for w in watchlist if w.get("status") == "STALK"]
-    export["stalk_orders"] = generate_stalk_orders(stalk_items, settings)
+    """Execute a pro scan (blocking). Returns dashboard-ready dict."""
+    result = pro_scan(settings=settings)
 
-    # Persist to disk for the old dashboard too
+    # Flatten for dashboard consumption
+    export = {
+        "mode": "pro",
+        "regime": result["regime"],
+        "regime_score": result["regime_score"],
+        "vix": result["vix"],
+        "adx": result["adx"],
+        "market_score": result["market_score"],
+        "top_sectors": result["top_sectors"],
+        "validated": result["validated"],
+        "active": result["active"],
+        "opportunity": result["opportunity"],
+        "watchlist": result["watchlist"],
+        "predictive_radar": result.get("predictive_radar", []),
+        "stalk_orders": result["stalk_orders"],
+        "scan_time": result["scan_time"],
+        "total_scanned": result["total_scanned"],
+        "total_signals": result["total_signals"],
+        "total_predictive": result.get("total_predictive", 0),
+        "timestamp": result["scan_timestamp"],
+    }
+
+    # Persist to disk
     os.makedirs("data", exist_ok=True)
     with open(SCAN_FILE, "w") as f:
-        json.dump(export, f, indent=2)
+        json.dump(export, f, indent=2, default=str)
     return export
 
 
@@ -168,7 +151,7 @@ async def run_scan():
 
     try:
         loop = asyncio.get_event_loop()
-        settings = state.settings or _build_default_settings()
+        settings = state.settings or {}
         result = await loop.run_in_executor(None, _run_scan_sync, settings)
 
         state.last_scan = result
@@ -176,21 +159,26 @@ async def run_scan():
         state.scan_count += 1
 
         # Keep last 50 scan summaries
+        n_validated = len(result.get("validated", []))
+        n_active = len(result.get("active", []))
+        n_opportunity = len(result.get("opportunity", []))
+        n_watchlist = len(result.get("watchlist", []))
         state.scan_history.append({
             "time": state.last_scan_time,
-            "actionable": result.get("actionable_count", 0),
-            "research": result.get("research_watchlist_count", 0),
-            "market_status": result.get("market_status", "UNKNOWN"),
-            "vix": result.get("vix_level"),
-            "state": result.get("opportunity_state", "QUIET"),
+            "validated": n_validated,
+            "active": n_active,
+            "opportunity": n_opportunity,
+            "watchlist": n_watchlist,
+            "regime": result.get("regime", "UNKNOWN"),
+            "vix": result.get("vix"),
         })
         if len(state.scan_history) > 50:
             state.scan_history = state.scan_history[-50:]
 
         logger.info(
             f"Scan #{state.scan_count} complete: "
-            f"{result.get('actionable_count', 0)} actionable, "
-            f"{result.get('research_watchlist_count', 0)} research"
+            f"{n_validated} validated, {n_active} active, "
+            f"{n_opportunity} opportunity, {n_watchlist} watchlist"
         )
 
         # Push full results to all clients
@@ -238,14 +226,14 @@ async def on_startup():
     if env_interval:
         state.scan_interval_min = max(1, int(env_interval))
 
-    state.settings = _build_default_settings()
+    state.settings = {}
     _update_next_scan_time()
 
     # Load cached results if available
     if SCAN_FILE.exists():
         try:
             with open(SCAN_FILE) as f:
-                state.last_scan = normalize_scan_payload(json.load(f))
+                state.last_scan = json.load(f)
                 state.last_scan_time = state.last_scan.get("timestamp")
         except Exception:
             pass
@@ -277,12 +265,12 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Send current state + last scan immediately
     try:
-        await ws.send_text(json.dumps(state.snapshot()))
+        await ws.send_text(json.dumps(state.snapshot(), default=str))
         if state.last_scan:
             await ws.send_text(json.dumps({
                 "type": "scan_result",
                 "data": state.last_scan,
-            }))
+            }, default=str))
     except Exception:
         pass
 
@@ -312,7 +300,7 @@ async def get_scan_results():
         return {"status": "success", "data": state.last_scan}
     if SCAN_FILE.exists():
         with open(SCAN_FILE) as f:
-            return {"status": "success", "data": normalize_scan_payload(json.load(f))}
+            return {"status": "success", "data": json.load(f)}
     return {"status": "pending", "message": "First scan in progress..."}
 
 
@@ -364,9 +352,10 @@ def main():
 
     import uvicorn
     print(f"\n{'='*60}")
-    print(f"  TITAN TRADE v9.0 — LIVE DASHBOARD")
+    print(f"  TITAN PRO SCANNER — LIVE DASHBOARD")
     print(f"  http://{args.host}:{args.port}")
     print(f"  Scan interval: {interval} minutes")
+    print(f"  Mode: Multi-Signal Detection (KOSPI architecture)")
     print(f"{'='*60}\n")
 
     uvicorn.run(
