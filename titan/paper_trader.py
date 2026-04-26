@@ -28,7 +28,9 @@ Usage:
 
 import json
 import os
+import tempfile
 from datetime import datetime
+import numpy as np
 
 from titan.config import (
     PAPER_TRADE_FILE,
@@ -52,11 +54,30 @@ class PaperTrader:
                 with open(self.log_file, "r") as f:
                     self.trades = json.load(f)
             except (json.JSONDecodeError, Exception):
+                # Backup corrupted file before discarding data
+                bak_path = self.log_file + ".corrupt.bak"
+                try:
+                    import shutil
+                    shutil.copy2(self.log_file, bak_path)
+                    print(f"  WARNING: {self.log_file} is corrupted. Backup saved to {bak_path}")
+                except Exception:
+                    print(f"  WARNING: {self.log_file} is corrupted and backup failed.")
                 self.trades = []
 
     def _save(self):
-        with open(self.log_file, "w") as f:
-            json.dump(self.trades, f, indent=2, default=str)
+        dir_name = os.path.dirname(self.log_file) or "."
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix='.tmp')
+        try:
+            with os.fdopen(tmp_fd, 'w') as f:
+                json.dump(self.trades, f, indent=2, default=str)
+            os.replace(tmp_path, self.log_file)  # atomic on Windows and Unix
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def log_signal(self, signal: dict) -> bool:
         """Log a new signal as PENDING_FILL. Called by scanner after each scan.
@@ -123,11 +144,12 @@ class PaperTrader:
                 if signal_date and signal_date < today:
                     # Give 1 day to fill, then expire
                     try:
-                        from datetime import timedelta
-                        sig_dt = datetime.strptime(signal_date, "%Y-%m-%d")
-                        if (datetime.now() - sig_dt).days > 2:
+                        sig_dt = datetime.strptime(signal_date, "%Y-%m-%d").date()
+                        today_dt = datetime.strptime(today, "%Y-%m-%d").date()
+                        bdays = int(np.busday_count(sig_dt, today_dt))
+                        if bdays > 2:
                             trade["status"] = "EXPIRED"
-                            trade["exit_reason"] = "No fill within 2 days"
+                            trade["exit_reason"] = "No fill within 2 business days"
                             updated = True
                     except Exception:
                         pass
@@ -186,7 +208,13 @@ class PaperTrader:
         if today_low <= 0 or today_high <= 0 or today_close <= 0:
             return False
 
-        trade["days_held"] += 1
+        # Compute days_held from entry_date using business days
+        try:
+            entry_dt = datetime.strptime(trade["entry_date"], "%Y-%m-%d").date()
+            today_dt = datetime.strptime(today, "%Y-%m-%d").date()
+            trade["days_held"] = int(np.busday_count(entry_dt, today_dt))
+        except Exception:
+            trade["days_held"] += 1
 
         # Check stop first (worst case)
         if today_low <= trade["stop"]:
@@ -211,7 +239,7 @@ class PaperTrader:
         trade["exit_price"] = round(exit_after_commission, 2)
         trade["exit_date"] = today
         trade["exit_reason"] = reason
-        trade["status"] = reason
+        trade["status"] = "CLOSED"
 
         if trade["entry_price"] and trade["entry_price"] > 0:
             trade["pnl_pct"] = round(
@@ -227,7 +255,7 @@ class PaperTrader:
         filled = [t for t in self.trades if t["status"] == "FILLED"]
         missed = [t for t in self.trades if t["status"] == "MISSED"]
         expired = [t for t in self.trades if t["status"] == "EXPIRED"]
-        closed = [t for t in self.trades if t["pnl_pct"] is not None]
+        closed = [t for t in self.trades if t["status"] == "CLOSED"]
 
         summary = {
             "total_signals": len(self.trades),

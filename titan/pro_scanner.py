@@ -15,6 +15,9 @@ Tiers:
 """
 
 import time
+import sys
+import threading
+import traceback
 import concurrent.futures
 import pandas as pd
 import numpy as np
@@ -36,6 +39,13 @@ from titan.execution_plan import (
     VALIDATED_MAX_CHASE_PCT, ACTIVE_MAX_CHASE_PCT, OPPORTUNITY_MAX_CHASE_PCT,
 )
 from titan.signal_tracker import SignalTracker
+from titan.profiles import (
+    backtest_signal, resolve_signal_move_profile,
+    build_signal_family_prior, family_prior_supports_thin_history,
+    family_prior_is_negative, SHORT_EDGE_MIN_ANALOGS, PRO_MIN_BT_TRADES,
+)
+from titan.smart_money import get_smart_money_flow, smart_money_bonus, smart_money_grade_factors
+from titan.optimizer import should_run_weekly_optimization, run_weekly_optimization, load_optimized_params
 
 # ---------------------------------------------------------------------------
 # Portfolio-level risk filter
@@ -68,10 +78,14 @@ class PortfolioFilter:
         self._current_heat = 0.0
         self._sector_counts: dict[str, int] = {}
         self._open_count = len(open_positions)
+        self._open_symbols = {str(symbol).upper() for symbol in open_positions.keys()}
 
-        for pos in open_positions.values():
+        for symbol, pos in open_positions.items():
+            ticker = str(pos.get("ticker") or symbol).upper()
+            if ticker:
+                self._open_symbols.add(ticker)
             entry = pos.get("entry_price", 0)
-            stop = pos.get("stop_loss", 0)
+            stop = pos.get("stop_loss", pos.get("stop", 0))
             shares = pos.get("shares", 0)
             if entry > stop > 0:
                 self._current_heat += (entry - stop) * shares / self.account_size * 100
@@ -94,6 +108,12 @@ class PortfolioFilter:
         running_count = self._open_count
 
         for sig in signals:
+            ticker = str(sig.get("ticker") or "").upper()
+            if ticker and ticker in self._open_symbols:
+                sig["_rejected"] = "already_held"
+                rejected.append(sig)
+                continue
+
             # Max positions
             if running_count + len(accepted) >= self.max_total:
                 sig["_rejected"] = "max_positions"
@@ -151,9 +171,14 @@ PREDICTIVE_MIN_SCORE = 5.0
 
 def _classify_gap_risk(avg_gap_pct: float, gap_above_1pct_prob: float) -> str:
     """Classify gap risk from historical open-vs-prev-close data."""
-    if avg_gap_pct > 1.5 or gap_above_1pct_prob > 30.0:
+    prob_pct = (
+        float(gap_above_1pct_prob) * 100.0
+        if 0.0 <= float(gap_above_1pct_prob) <= 1.0
+        else float(gap_above_1pct_prob)
+    )
+    if avg_gap_pct > 1.5 or prob_pct > 30.0:
         return "HIGH"
-    if avg_gap_pct < 0.5 and gap_above_1pct_prob < 10.0:
+    if avg_gap_pct < 0.5 and prob_pct < 10.0:
         return "LOW"
     return "MED"
 
@@ -176,7 +201,7 @@ def _compute_historical_gap_risk(df: pd.DataFrame) -> tuple[str, float, float]:
         ]
         if not gap_changes:
             return "MED", 0.0, 0.0
-        avg_gap_pct = sum(gap_changes) / len(gap_changes)
+        avg_gap_pct = sum(abs(g) for g in gap_changes) / len(gap_changes)
         gap_above_1pct_prob = sum(1 for g in gap_changes if abs(g) > 1.0) / len(gap_changes) * 100
         risk = _classify_gap_risk(avg_gap_pct, gap_above_1pct_prob)
         return risk, round(avg_gap_pct, 2), round(gap_above_1pct_prob, 1)
@@ -197,7 +222,7 @@ def _check_weekly_trend(df: pd.DataFrame) -> dict:
     sma10w = close.rolling(50).mean()  # ~10 weeks
     sma30w = close.rolling(150).mean()  # ~30 weeks
 
-    if sma10w.iloc[-1] is None or sma30w.iloc[-1] is None:
+    if pd.isna(sma10w.iloc[-1]) or pd.isna(sma30w.iloc[-1]):
         return {"valid": False, "trend": "N/A", "aligned": True}
 
     last_close = _safe(close.iloc[-1])
@@ -803,6 +828,9 @@ def _process_ticker(
     market_score: float,
     strength_floor: float,
     top_sectors: list | None = None,
+    family_priors: dict | None = None,
+    stock_frames: dict | None = None,
+    family_lock: threading.Lock | None = None,
 ) -> tuple[dict | None, dict | None]:
     """Analyze one ticker.
 
@@ -911,6 +939,16 @@ def _process_ticker(
     is_choppy = adx < ADX_CHOPPY_THRESHOLD
     is_strong_trend = adx > ADX_STRONG_TREND_THRESHOLD
 
+    # Strong downtrend penalty: ADX > 40 + BEAR/STRONG_BEAR = very dangerous
+    # Only allow relative strength leaders with weekly uptrend
+    if adx > 40 and regime in ("STRONG_BEAR", "BEAR"):
+        if signal_type not in ("REL_STR", "MOM_RANK"):
+            strength -= 3.0
+            reasons.append(f"Strong downtrend penalty (ADX {adx:.0f}, {regime})")
+        elif weekly_trend not in ("STRONG_UP", "UP"):
+            strength -= 2.0
+            reasons.append(f"Bear trend, no weekly uptrend")
+
     # Choppy market: penalize breakout types, bonus safe types (KOSPI v5 style)
     if is_choppy:
         if signal_type in ("BREAKOUT", "MOMENTUM", "VOL_SPIKE", "PRE_BREAK"):
@@ -999,20 +1037,79 @@ def _process_ticker(
     # Backtest evidence: Keep 2.0 ATR stop (wider = stable buy zones, less whipsaw).
     # Reduced target from 3.0 to 2.5 ATR (more targets hit: 17.8% vs 11.3%).
     atr = t.get("atr", close * 0.03)
+    # In bear markets, use tighter targets (1.8 ATR instead of 2.5)
+    target_mult = 1.8 if regime in ("STRONG_BEAR", "BEAR") else 2.5
     stop = round(close - (2.0 * atr), 2)
-    target = round(close + (2.5 * atr), 2)
+    target = round(close + (target_mult * atr), 2)
 
+    # ── Per-signal mini-backtest (run BEFORE execution plan to get best_horizon) ──
+    bt_result = {}
+    move_profile = {}
+    family_prior = None
+    try:
+        bt_result = backtest_signal(df, signal_type, technicals_current=t)
+        bt_trades = int(bt_result.get("trades", 0) or 0)
+        profile_samples = int(bt_result.get("profile_analog_samples", 0) or 0)
+
+        # Thin history check — get family prior if needed
+        thin_stock_history = (
+            signal_type in EARLY_SIGNAL_TYPES
+            and bt_trades < PRO_MIN_BT_TRADES
+            and profile_samples < SHORT_EDGE_MIN_ANALOGS
+        )
+        if thin_stock_history and family_priors is not None:
+            _lock = family_lock or threading.Lock()
+            with _lock:
+                if signal_type not in family_priors and stock_frames:
+                    # Build family prior on first encounter of this signal type
+                    family_priors[signal_type] = build_signal_family_prior(
+                        stock_frames, signal_type, lookback_days=252
+                    )
+                family_prior = family_priors.get(signal_type)
+
+            # Reject if family evidence is negative
+            if family_prior_is_negative(family_prior):
+                reasons.append("Family prior negative")
+                strength -= 2.0
+
+        # Reject signal if backtest shows clearly negative edge
+        if bt_trades >= 10 and bt_result.get("avg_return", 0) < -0.2:
+            if not bt_result.get("profile_validated", False):
+                reasons.append(f"Negative backtest edge ({bt_result['avg_return']:+.2f}%)")
+                return None, pred_result
+
+        # Apply profile-based strength adjustment
+        move_profile = resolve_signal_move_profile(
+            bt_result, family_prior=family_prior,
+            allow_family=thin_stock_history if family_prior else False,
+        )
+        if move_profile:
+            mp_return = move_profile.get("expected_return", 0)
+            mp_prob = move_profile.get("up_prob", 50)
+            if mp_return > 0.3 and mp_prob >= 55:
+                strength += 1.0
+                reasons.append(f"Edge profile +{mp_return:.1f}% ({mp_prob:.0f}% WR)")
+            elif mp_return < -0.1 and mp_prob < 48:
+                strength -= 1.0
+                reasons.append(f"Weak edge {mp_return:+.1f}%")
+    except Exception:
+        pass  # Mini-backtest is optional, don't break scanner
+
+    # ── Build execution plan (AFTER backtest so we have best_horizon) ─────
     plan = build_execution_plan(
         signal_type=signal_type,
         price=close,
         stop=stop,
         target=target,
         atr=atr,
+        best_horizon=move_profile.get("best_horizon", 3),
+        move_up_prob=move_profile.get("up_prob", 0),
+        move_expected_return=move_profile.get("expected_return", 0),
         avg_open_gap_pct=hist_avg_gap_pct,
         gap_above_1pct_prob=hist_gap_above_1pct_prob,
     )
 
-    # Classify into tiers
+    # Classify into tiers (before smart money — avoid unnecessary HTTP calls)
     tier = _classify_tier(
         signal_type=signal_type,
         strength=strength,
@@ -1027,6 +1124,21 @@ def _process_ticker(
 
     if tier is None:
         return None, pred_result
+
+    # ── Smart money flow (only for signals that passed tier classification) ──
+    sm_flow = {}
+    if tier in ("VALIDATED", "ACTIVE", "OPPORTUNITY"):
+        try:
+            sm_flow = get_smart_money_flow(ticker)
+            sm_bonus = smart_money_bonus(sm_flow)
+            if sm_bonus != 0:
+                strength += sm_bonus
+                if sm_bonus > 0:
+                    reasons.append(f"Smart money +{sm_bonus:.0f}")
+                else:
+                    reasons.append(f"Smart money {sm_bonus:+.0f}")
+        except Exception:
+            pass
 
     # Signal grading (A/B/C)
     grade = _grade_signal(
@@ -1083,6 +1195,21 @@ def _process_ticker(
         "reasons": reasons[:5],
         "sector": sector,
         "date": datetime.now().strftime("%Y-%m-%d"),
+        # New: backtest evidence
+        "bt_trades": bt_result.get("trades", 0),
+        "bt_win_rate": round(bt_result.get("win_rate", 0), 1),
+        "bt_avg_return": round(bt_result.get("avg_return", 0), 2),
+        "bt_validated": bt_result.get("validated", False),
+        "profile_samples": bt_result.get("profile_analog_samples", 0),
+        "profile_score": round(bt_result.get("profile_score", 0), 1),
+        "move_source": move_profile.get("source", ""),
+        "move_up_prob": round(move_profile.get("up_prob", 0), 1),
+        "move_expected_return": round(move_profile.get("expected_return", 0), 2),
+        # New: smart money
+        "smart_money_score": sm_flow.get("smart_money_score", 0),
+        "inst_ownership_pct": sm_flow.get("inst_ownership_pct", 0),
+        "short_pct_float": sm_flow.get("short_pct_float", 0),
+        "put_call_ratio": sm_flow.get("put_call_ratio", 1.0),
     }
 
     return signal_result, pred_result
@@ -1117,7 +1244,7 @@ def _classify_tier(
     val_floor = _validated_min_strength(market_score, signal_type) + bear_boost
     wl_floor = _watchlist_min_strength(market_score, signal_type) + bear_boost
 
-    # Validated: fresh signal, inside buy zone, strong enough
+    # Validated: fresh signal, inside buy zone (0% chase), strong enough
     if is_fresh and strength >= val_floor:
         if fresh_entry_is_buyable(close, plan):
             if is_bear:
@@ -1129,8 +1256,10 @@ def _classify_tier(
                 if strength >= val_floor + 1:
                     return "VALIDATED"
 
-    # Active: 1-2 bars old, still inside plan
-    if 0 < age <= SIGNAL_FRESHNESS_BARS:
+    # Active: 0-2 bars old, still inside buy zone with small chase tolerance.
+    # NOTE: age == 0 signals that barely missed VALIDATED (price slightly above
+    # max_buy_price) should still be ACTIVE, not OPPORTUNITY.
+    if age <= SIGNAL_FRESHNESS_BARS:
         if is_entry_buyable(close, plan, ACTIVE_MAX_CHASE_PCT):
             if is_bear:
                 if signal_type in EARLY_SIGNAL_TYPES and strength >= val_floor and weekly_trend in ("STRONG_UP", "UP"):
@@ -1141,7 +1270,7 @@ def _classify_tier(
                 if strength >= val_floor + 1:
                     return "ACTIVE"
 
-    # Opportunity: slightly extended but edge may remain
+    # Opportunity: slightly extended or outside buy zone but edge may remain
     if age <= SIGNAL_FRESHNESS_BARS and strength >= val_floor:
         if is_entry_buyable(close, plan, OPPORTUNITY_MAX_CHASE_PCT):
             return "OPPORTUNITY"
@@ -1223,16 +1352,16 @@ def pro_scan(settings=None, market_data_bundle=None) -> dict:
 
     print(f"  Regime: {regime}  |  ADX: {adx:.0f}  |  VIX: {vix_level:.1f}" if vix_level else f"  Regime: {regime}  |  ADX: {adx:.0f}")
 
-    # VIX panic
+    # VIX panic — warn but continue scanning with caution
     if vix_level and vix_level > VIX_PANIC_THRESHOLD:
-        print(f"  [!] VIX PANIC ({vix_level:.1f}) -- scanner blocked")
-        return _empty_result(regime, vix_level, time.time() - start_time)
+        print(f"  [!] VIX PANIC ({vix_level:.1f}) — scanning with EXTREME caution.")
+        print("      Volatility is very high. Only the strongest setups will appear.")
 
     if regime == "STRONG_BEAR":
         # Backtest evidence: 36.5% WR in STRONG_BEAR, avg -1.05% at 3D.
-        # Trading in strong bear markets is donating money.
-        print("  [!] STRONG BEAR -- scanner blocked. Backtest shows 36.5% WR in this regime.")
-        return _empty_result(regime, vix_level, time.time() - start_time)
+        # Still scan but with maximum caution — bear_boost already raises thresholds by 2.0.
+        print("  [!] STRONG BEAR — scanning with MAXIMUM caution (thresholds raised).")
+        print("      Position sizes should be MINIMAL. Consider staying in cash.")
 
     # ── Top sectors ────────────────────────────────────────────────────────
     top_sectors = []
@@ -1262,7 +1391,7 @@ def pro_scan(settings=None, market_data_bundle=None) -> dict:
     # ── Breadth ────────────────────────────────────────────────────────────
     bullish = 0
     checked = 0
-    for t in tickers[:50]:
+    for t in tickers:
         try:
             if isinstance(data.columns, pd.MultiIndex) and t in data.columns.levels[0]:
                 tdf = data[t]["Close"].dropna()
@@ -1276,8 +1405,45 @@ def pro_scan(settings=None, market_data_bundle=None) -> dict:
     market_score = (bullish / checked * 100) if checked > 0 else 50
     print(f"  Breadth: {bullish}/{checked} above SMA20 ({market_score:.0f}%)")
 
-    # ── Dynamic strength floor ───────────────────────────────────────────
+    # ── Dynamic strength floor (may be overridden by optimizer) ─────────
     strength_floor = _watchlist_min_strength(market_score, "GENERIC")
+
+    # ── Weekly auto-optimization ──────────────────────────────────────────
+    try:
+        if should_run_weekly_optimization():
+            # Build stock frames for optimization
+            _opt_frames = {}
+            if isinstance(data.columns, pd.MultiIndex):
+                for t in tickers[:30]:
+                    if t in data.columns.levels[0]:
+                        tdf = data[t].dropna()
+                        if len(tdf) >= 200:
+                            _opt_frames[t] = tdf
+            if len(_opt_frames) >= 5:
+                run_weekly_optimization(_opt_frames, spy_df)
+        opt_params = load_optimized_params()
+    except Exception:
+        opt_params = {}
+
+    # Apply optimized strength floor if available
+    if opt_params:
+        if regime in ("STRONG_BEAR", "BEAR") and "strength_floor_bear" in opt_params:
+            strength_floor = max(strength_floor, opt_params["strength_floor_bear"] - 1.0)
+        elif regime in ("STRONG_BULL", "BULL") and "strength_floor_bull" in opt_params:
+            strength_floor = max(strength_floor, opt_params["strength_floor_bull"] - 1.0)
+        elif "strength_floor_sideways" in opt_params:
+            strength_floor = max(strength_floor, opt_params["strength_floor_sideways"] - 1.0)
+
+    # ── Build stock frames dict + family prior cache ──────────────────────
+    stock_frames = {}
+    if isinstance(data.columns, pd.MultiIndex):
+        for t in tickers:
+            if t in data.columns.levels[0]:
+                tdf = data[t].dropna()
+                if len(tdf) >= 60:
+                    stock_frames[t] = tdf
+    family_priors: dict = {}
+    family_lock = threading.Lock()
 
     # ── Scan all tickers ───────────────────────────────────────────────────
     print(f"  Scanning {len(tickers)} stocks...")
@@ -1287,14 +1453,18 @@ def pro_scan(settings=None, market_data_bundle=None) -> dict:
 
     def _analyze(ticker):
         try:
-            if isinstance(data.columns, pd.MultiIndex) and ticker in data.columns.levels[0]:
-                tdf = data[ticker].dropna()
+            tdf = stock_frames.get(ticker)
+            if tdf is not None and not tdf.empty:
                 return _process_ticker(
                     ticker, tdf, spy_df, regime_info, market_score,
                     strength_floor, top_sectors,
+                    family_priors=family_priors,
+                    stock_frames=stock_frames,
+                    family_lock=family_lock,
                 )
         except Exception:
-            pass
+            traceback.print_exc()
+            print(f"  [ERROR] _analyze failed for {ticker}", file=sys.stderr)
         return None, None
 
     max_workers = int(settings.get("max_workers", DEFAULT_MAX_WORKERS))
@@ -1343,31 +1513,50 @@ def pro_scan(settings=None, market_data_bundle=None) -> dict:
         print(f"  Portfolio filter: {len(portfolio_rejected)} signals blocked — {rej_reasons}")
 
     # ── Build stalk orders ─────────────────────────────────────────────────
-    # Stability filter: only VALIDATED with grade A or B and strength >= 2 above floor.
-    # This prevents borderline signals from flip-flopping between scans.
-    # Backtest evidence: VALIDATED tier has positive edge; ACTIVE is weaker.
-    # Sort deterministically: trade_score desc, then ticker asc (stable across scans)
+    # Include VALIDATED (fresh) + ACTIVE (1-2 bars old, still in buy zone).
+    # ACTIVE signals are real setups — just not brand-new. Excluding them
+    # means the scanner almost never produces actionable orders.
+    # Sort deterministically: tier priority (VALIDATED first), then trade_score desc.
+    tier_priority = {"VALIDATED": 0, "ACTIVE": 1}
     stalk_candidates = sorted(
-        [r for r in accepted if r["tier"] == "VALIDATED"],
-        key=lambda r: (-r["trade_score"], r["ticker"]),
+        [r for r in accepted if r["tier"] in ("VALIDATED", "ACTIVE")],
+        key=lambda r: (tier_priority.get(r["tier"], 9), -r["trade_score"], r["ticker"]),
     )
     stalk_orders = []
-    for r in stalk_candidates[:MAX_POSITIONS]:
+    for r in stalk_candidates:
+        if len(stalk_orders) >= MAX_POSITIONS:
+            break
         if r["qty"] <= 0:
             continue
-        # Stability: skip grade C (backtest: 49.7% WR, no edge)
+        # Stability: skip grade C (no statistical edge)
         if r.get("grade") == "C":
             continue
-        # Stability: require strength >= dynamic floor + 2.0 buffer
+        # Stability: require strength >= dynamic floor + 1.0 buffer
+        # (relaxed from +2.0 — too strict was producing 0 orders)
         sig_floor = _validated_min_strength(market_score, r["signal_type"])
-        if r["signal_strength"] < sig_floor + 2.0:
+        if r["signal_strength"] < sig_floor + 1.0:
             continue
+        # Extra check for ACTIVE: require positive backtest evidence
+        if r["tier"] == "ACTIVE" and r.get("bt_trades", 0) >= 10:
+            if r.get("bt_win_rate", 0) < 45:
+                continue
+        # Profile evidence is noisy, but when it has enough analogs and both
+        # expected return and up-probability are negative, it is not a swing buy.
+        if int(r.get("profile_samples", 0) or 0) >= SHORT_EDGE_MIN_ANALOGS:
+            if float(r.get("move_expected_return", 0) or 0) <= 0 and float(r.get("move_up_prob", 0) or 0) < 50:
+                continue
         stalk_orders.append({
             "ticker": r["ticker"],
             "signal_type": r["signal_type"],
             "grade": r.get("grade", "C"),
+            "tier": r["tier"],
+            "sector": r.get("sector", ""),
+            "price": r["price"],
             "qty": r["qty"],
             "limit_price": r["max_buy_price"],
+            "buy_zone_low": r["buy_zone_low"],
+            "buy_zone_high": r["buy_zone_high"],
+            "max_buy_price": r["max_buy_price"],
             "stop_price": r["stop"],
             "target_price": r["target"],
             "risk_dollars": r["risk_dollars"],
@@ -1375,6 +1564,16 @@ def pro_scan(settings=None, market_data_bundle=None) -> dict:
             "time_stop_days": r["time_stop_days"],
             "entry_note": r["entry_note"],
             "trade_score": r["trade_score"],
+            "rr_ratio": r.get("rr_ratio", 0),
+            "rsi": r.get("rsi", 0),
+            "volume_ratio": r.get("volume_ratio", 0),
+            "change_5d": r.get("change_5d", 0),
+            "vol_contraction": r.get("vol_contraction", 0),
+            "bt_win_rate": r.get("bt_win_rate", 0),
+            "bt_trades": r.get("bt_trades", 0),
+            "move_up_prob": r.get("move_up_prob", 0),
+            "move_expected_return": r.get("move_expected_return", 0),
+            "profile_samples": r.get("profile_samples", 0),
         })
 
     # ── Log signals + paper trade tracking ─────────────────────────────────
@@ -1387,16 +1586,30 @@ def pro_scan(settings=None, market_data_bundle=None) -> dict:
         from titan.paper_trader import PaperTrader
         pt = PaperTrader()
         # Update existing trades with fresh market data
+        # Include all tickers with open paper trades, not just current signals
         ticker_data = {}
         if isinstance(data.columns, pd.MultiIndex):
-            for sig in validated + active:
-                t = sig["ticker"]
+            # Start with tickers from current signals
+            update_tickers = set(sig["ticker"] for sig in validated + active)
+            # Add tickers with open paper trades so they get price updates too
+            if hasattr(pt, 'get_open_tickers'):
+                open_trade_tickers = set(pt.get_open_tickers())
+            else:
+                # Fallback: read from trades list directly
+                open_trade_tickers = set(
+                    t["ticker"] for t in getattr(pt, "trades", [])
+                    if t.get("status") in ("PENDING_FILL", "FILLED")
+                )
+            update_tickers |= open_trade_tickers
+            for t in update_tickers:
                 if t in data.columns.levels[0]:
                     ticker_data[t] = data[t].dropna()
         pt.update(ticker_data)
-        # Log new signals (only VALIDATED + ACTIVE — actually tradeable)
+        # Log new signals — only top VALIDATED + top ACTIVE by trade_score.
+        # Cap at 10 to avoid polluting paper trade tracking with 100+ signals.
+        paper_candidates = sorted(validated + active, key=lambda r: -r["trade_score"])[:10]
         logged = 0
-        for r in validated + active:
+        for r in paper_candidates:
             if pt.log_signal(r):
                 logged += 1
         if logged > 0:
@@ -1492,19 +1705,20 @@ def _print_summary(regime, vix, market_score, adx, top_sectors,
 
     if active:
         print(f"\n{'-' * 70}")
-        print("  ACTIVE -- Still inside entry plan (1-2 bars old)")
+        active_shown = min(20, len(active))
+        print(f"  ACTIVE -- Still inside entry plan (showing top {active_shown} of {len(active)})")
         print(f"{'-' * 70}")
-        _print_tier(active)
+        _print_tier(active[:20])
 
     if opportunity:
         print(f"\n{'-' * 70}")
-        print("  OPPORTUNITY -- WATCH ONLY, do NOT buy (backtest: negative edge)")
+        print("  OPPORTUNITY -- Extended or weaker conviction (monitor for pullback entry)")
         print(f"{'-' * 70}")
         _print_tier(opportunity[:10])
 
     if watchlist:
         print(f"\n{'-' * 70}")
-        print("  WATCHLIST -- WATCH ONLY, do NOT buy (backtest: negative edge)")
+        print("  WATCHLIST -- Not yet actionable (watch for setup improvement)")
         print(f"{'-' * 70}")
         _print_tier(watchlist[:15])
 
@@ -1525,13 +1739,14 @@ def _print_summary(regime, vix, market_score, adx, top_sectors,
 
 def _print_tier(items):
     print(f"  {'':>3} {'Ticker':<7} {'Type':<10} {'Score':>5} {'Price':>8} {'Stop':>8} {'Target':>8} "
-          f"{'Buy Zone':<20} {'RSI':>4} {'Vol':>4} {'VC':>5} {'Wk':>6} {'Reasons'}")
+          f"{'Buy Zone':<20} {'BT':>7} {'TS':>3} {'Wk':>6} {'Reasons'}")
     print(f"  {'-' * 115}")
     for r in items:
         bz = f"${r['buy_zone_low']:.2f}-${r['buy_zone_high']:.2f}"
         reasons_str = " | ".join(r.get("reasons", [])[:2])
         g = r.get("grade", "C")
+        bt_str = f"{r.get('bt_win_rate',0):.0f}%/{r.get('bt_trades',0)}" if r.get('bt_trades', 0) > 0 else "  n/a"
+        ts = r.get("time_stop_days", 0)
         print(f"  [{g}] {r['ticker']:<7} {r['signal_type']:<10} {r['trade_score']:>5.1f} "
               f"${r['price']:>7.2f} ${r['stop']:>7.2f} ${r['target']:>7.2f} "
-              f"{bz:<20} {r['rsi']:>4.0f} {r['volume_ratio']:>4.1f} {r['vol_contraction']:>5.2f} "
-              f"{r['weekly_trend']:>6} {reasons_str}")
+              f"{bz:<20} {bt_str:>7} {ts:>3}d {r['weekly_trend']:>6} {reasons_str}")

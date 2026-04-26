@@ -645,6 +645,276 @@ tbody tr.highlight-new {
 }
 .buy-zone .bz-range { color: var(--accent-blue); }
 
+/* --- DAILY LOSS BANNER ------------------------------------------------- */
+.loss-cap-banner {
+  padding: 10px 24px;
+  background: rgba(239, 68, 68, 0.18);
+  color: var(--accent-red);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.4);
+  font-size: 13px;
+  font-weight: 600;
+  display: none;
+  align-items: center;
+  gap: 10px;
+}
+.loss-cap-banner.visible { display: flex; }
+.loss-cap-banner .lcb-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--accent-red);
+  box-shadow: 0 0 8px var(--accent-red);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* --- STALK CARD EXTRA BADGES ------------------------------------------- */
+.stalk-live-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.stalk-live-IN_ZONE { background: rgba(16, 185, 129, 0.12); color: var(--accent-green); }
+.stalk-live-PAST_MAX_BUY { background: rgba(239, 68, 68, 0.18); color: var(--accent-red); }
+.stalk-live-BELOW_ZONE { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
+.stalk-live-BROKEN { background: rgba(239, 68, 68, 0.22); color: var(--accent-red); }
+.stalk-live-UNKNOWN { background: rgba(148, 163, 184, 0.12); color: var(--text-muted); }
+
+.flag-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 3px;
+  margin-left: 6px;
+  letter-spacing: 0.5px;
+  display: inline-block;
+  vertical-align: middle;
+}
+.flag-held { background: rgba(167, 139, 250, 0.25); color: var(--accent-purple); }
+.flag-sector { background: rgba(245, 158, 11, 0.20); color: var(--accent-amber); }
+.flag-earnings { background: rgba(239, 68, 68, 0.22); color: var(--accent-red); }
+.flag-earnings-soon { background: rgba(245, 158, 11, 0.20); color: var(--accent-amber); }
+.flag-top-pick {
+  background: linear-gradient(135deg, rgba(250, 204, 21, 0.32), rgba(245, 158, 11, 0.28));
+  color: #fde047;
+  border: 1px solid rgba(250, 204, 21, 0.55);
+  text-shadow: 0 0 4px rgba(250, 204, 21, 0.4);
+}
+.flag-time-stop {
+  background: rgba(245, 158, 11, 0.22);
+  color: var(--accent-amber);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+/* Swing-score pill — one of four tiers */
+.swing-pill {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 3px;
+  margin-left: 6px;
+  letter-spacing: 0.5px;
+  display: inline-block;
+  vertical-align: middle;
+  cursor: help;
+}
+.swing-top-pick {
+  background: rgba(250, 204, 21, 0.22);
+  color: #fde047;
+  border: 1px solid rgba(250, 204, 21, 0.5);
+}
+.swing-strong {
+  background: rgba(16, 185, 129, 0.2);
+  color: var(--accent-green);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+.swing-decent {
+  background: rgba(96, 165, 250, 0.18);
+  color: var(--accent-blue);
+  border: 1px solid rgba(96, 165, 250, 0.35);
+}
+.swing-weak {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--text-muted);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+/* Partial-exit / quick-profit advisory callouts */
+.advisory-box {
+  font-size: 11px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.advisory-partial {
+  background: rgba(250, 204, 21, 0.12);
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  color: #fde047;
+}
+.advisory-quick {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: var(--accent-green);
+}
+.advisory-timestop {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: var(--accent-amber);
+}
+
+/* --- MY POSITIONS ------------------------------------------------------ */
+.positions-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.position-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.position-add-row input {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  color: var(--text-primary);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  height: 32px;
+  box-sizing: border-box;
+}
+.position-add-row input:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+.position-add-row input.w-ticker { width: 72px; text-transform: uppercase; }
+.position-add-row input.w-price { width: 88px; }
+.position-add-row input.w-shares { width: 72px; }
+.position-add-row input.w-date { width: 130px; }
+.position-add-row input.w-days { width: 56px; }
+.position-add-row .add-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+.position-add-row .btn-add {
+  background: var(--accent-green);
+  color: #0a0e17;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  height: 32px;
+  letter-spacing: 0.5px;
+}
+.position-add-row .btn-add:hover { filter: brightness(1.1); }
+.position-add-row .btn-add:disabled { opacity: 0.4; cursor: not-allowed; }
+.position-add-row .plan-hint {
+  font-size: 11px;
+  color: var(--accent-cyan);
+  font-family: var(--font-mono);
+}
+.position-add-row .error-hint {
+  font-size: 11px;
+  color: var(--accent-red);
+  font-family: var(--font-mono);
+}
+
+.pos-alert {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  display: inline-block;
+}
+.pos-alert-HOLD { background: rgba(148, 163, 184, 0.15); color: var(--text-secondary); }
+.pos-alert-WARN_STOP { background: rgba(249, 115, 22, 0.15); color: var(--grade-d); }
+.pos-alert-WARN_TARGET { background: rgba(34, 211, 238, 0.15); color: var(--accent-cyan); }
+.pos-alert-WARN_TIMESTOP { background: rgba(245, 158, 11, 0.2); color: var(--accent-amber); font-weight: 700; }
+.pos-alert-SELL_STOP {
+  background: rgba(239, 68, 68, 0.25);
+  color: var(--accent-red);
+  animation: pulseAlert 1.2s ease-in-out infinite;
+}
+.pos-alert-SELL_TARGET {
+  background: rgba(16, 185, 129, 0.25);
+  color: var(--accent-green);
+  animation: pulseAlert 1.2s ease-in-out infinite;
+}
+.pos-alert-SELL_TIMESTOP {
+  background: rgba(245, 158, 11, 0.25);
+  color: var(--accent-amber);
+  animation: pulseAlert 1.2s ease-in-out infinite;
+}
+.pos-alert-SELL_TRAIL {
+  background: rgba(167, 139, 250, 0.25);
+  color: var(--accent-purple);
+  animation: pulseAlert 1.2s ease-in-out infinite;
+}
+.pos-alert-CLOSED { background: rgba(100, 116, 139, 0.2); color: var(--text-muted); }
+@keyframes pulseAlert {
+  0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 0.95; }
+  50% { box-shadow: 0 0 10px 0 currentColor; opacity: 1; }
+}
+
+.pos-actions {
+  display: flex;
+  gap: 4px;
+}
+.pos-actions button {
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  letter-spacing: 0.5px;
+  transition: all 0.15s;
+}
+.pos-actions button.close-btn:hover { border-color: var(--accent-green); color: var(--accent-green); }
+.pos-actions button.delete-btn:hover { border-color: var(--accent-red); color: var(--accent-red); }
+
+tr.row-sell-signal {
+  background: rgba(239, 68, 68, 0.04);
+}
+tr.row-sell-signal.row-target { background: rgba(16, 185, 129, 0.05); }
+tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
+
+.pos-summary {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+.pos-summary .ps-item { font-family: var(--font-mono); }
+.pos-summary .ps-val { color: var(--text-primary); font-weight: 700; }
+.pos-summary .ps-val.green { color: var(--accent-green); }
+.pos-summary .ps-val.red { color: var(--accent-red); }
+
 /* --- SCROLLBAR --------------------------------------------------------- */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -692,6 +962,10 @@ tbody tr.highlight-new {
 <!-- ALERT BANNER                                                       -->
 <!-- ================================================================== -->
 <div id="alert-banner" class="alert-banner"></div>
+<div id="loss-cap-banner" class="loss-cap-banner">
+  <span class="lcb-dot"></span>
+  <span id="loss-cap-text">Daily loss cap hit</span>
+</div>
 
 <!-- ================================================================== -->
 <!-- STATS ROW                                                          -->
@@ -732,6 +1006,58 @@ tbody tr.highlight-new {
     <div class="label">Scan Count</div>
     <div class="value mono" id="stat-scans">0</div>
     <div class="sub" id="stat-last-scan">never</div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- MY POSITIONS — What you actually bought. SELL alerts live here.    -->
+<!-- ================================================================== -->
+<div class="section" id="section-positions">
+  <div class="section-header">
+    <span class="section-title">My Positions &mdash; What to do tonight</span>
+    <div class="pos-summary" id="pos-summary"></div>
+  </div>
+  <div class="positions-wrap">
+    <div class="position-add-row">
+      <span class="add-label">Log a buy:</span>
+      <input id="pos-ticker" class="w-ticker" placeholder="TICKER" maxlength="6" autocomplete="off">
+      <input id="pos-entry" class="w-price" type="number" step="0.01" min="0" placeholder="Entry $">
+      <input id="pos-shares" class="w-shares" type="number" step="1" min="1" placeholder="Shares">
+      <input id="pos-date" class="w-date" type="date" title="Entry date">
+      <input id="pos-stop" class="w-price" type="number" step="0.01" min="0" placeholder="Stop $">
+      <input id="pos-target" class="w-price" type="number" step="0.01" min="0" placeholder="Target $">
+      <input id="pos-timestop" class="w-days" type="number" step="1" min="1" max="60" placeholder="Days" value="5" title="Time-stop in business days (swing default: 5)">
+      <label style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted);font-family:var(--font-mono);font-weight:700;letter-spacing:1px;cursor:pointer">
+        <input type="checkbox" id="pos-force" style="margin:0">FORCE
+      </label>
+      <button class="btn-add" id="btn-add-pos" onclick="addPosition()">+ ADD</button>
+      <span id="pos-add-hint" class="plan-hint"></span>
+    </div>
+    <div id="pos-preflight" style="font-size:11px;font-family:var(--font-mono);padding:4px 10px;display:none"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Alert</th>
+            <th>Entry</th>
+            <th>Current</th>
+            <th>P&amp;L $</th>
+            <th>P&amp;L %</th>
+            <th>Stop</th>
+            <th>Target</th>
+            <th>Dist Stop</th>
+            <th>Dist Target</th>
+            <th>Days</th>
+            <th>Shares</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="positions-body">
+          <tr><td colspan="13" class="empty-state"><p>No positions yet. Add one after you buy.</p></td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 
@@ -966,6 +1292,7 @@ tbody tr.highlight-new {
     const marketScore = data.market_score;
     const topSectors = data.top_sectors || [];
     const stalkOrders = data.stalk_orders || [];
+    const decision = data.trade_decision || null;
 
     // Topbar
     const mp = $("market-pill");
@@ -997,13 +1324,24 @@ tbody tr.highlight-new {
 
     // Scan count & time
     $("stat-last-scan").textContent = timeAgo(data.timestamp);
+    $("stat-last-scan").dataset.iso = data.timestamp;
 
-    // Alert banner
+    // Final decision banner
     const ab = $("alert-banner");
     const totalActionable = validated.length + active.length;
-    if (totalActionable > 0) {
+    if (decision && decision.action === "BUY") {
       ab.className = "alert-banner visible alert-actionable";
-      ab.innerHTML = `<strong>${totalActionable} ACTIONABLE</strong> &mdash; ${validated.length} validated + ${active.length} active signals. Place stalk orders and sleep.`;
+      const c = decision.candidate || {};
+      ab.innerHTML = `<strong>BUY ${decision.ticker}</strong> &mdash; ${decision.reason || "Only inside the plan."} Limit ${money(c.limit_price)}, stop ${money(c.stop_price)}, target ${money(c.target_price)}.`;
+    } else if (decision && decision.action === "WAIT") {
+      ab.className = "alert-banner visible alert-research";
+      ab.innerHTML = `<strong>WAIT</strong> &mdash; ${decision.reason || "Best setup is blocked."}`;
+    } else if (decision && decision.action === "SKIP") {
+      ab.className = "alert-banner visible alert-quiet";
+      ab.innerHTML = `<strong>SKIP</strong> &mdash; ${decision.reason || "No valid trade tonight."}`;
+    } else if (totalActionable > 0) {
+      ab.className = "alert-banner visible alert-research";
+      ab.innerHTML = `<strong>${totalActionable} SIGNALS</strong> &mdash; ${validated.length} validated + ${active.length} active rows. Use only stalk orders for entries.`;
     } else if (opportunity.length > 0) {
       ab.className = "alert-banner visible alert-research";
       ab.innerHTML = `<strong>RESEARCH</strong> &mdash; ${opportunity.length} opportunities found but entries may be extended. Monitor for pullbacks.`;
@@ -1013,6 +1351,17 @@ tbody tr.highlight-new {
     } else {
       ab.className = "alert-banner visible alert-quiet";
       ab.innerHTML = `<strong>QUIET</strong> &mdash; No setups found. Cash is a position.`;
+    }
+
+    // Daily loss cap banner
+    const lcb = $("loss-cap-banner");
+    if (data.daily_loss_cap_hit) {
+      const realized = Number(data.daily_realized_dollars || 0).toFixed(2);
+      const pct = Number(data.daily_realized_pct || 0).toFixed(2);
+      lcb.classList.add("visible");
+      $("loss-cap-text").innerHTML = `<strong>DAILY LOSS CAP HIT</strong> &mdash; realized ${pct}% ($${realized}). Stop trading today. New buys disabled unless you force.`;
+    } else {
+      lcb.classList.remove("visible");
     }
 
     // Stalk orders
@@ -1058,13 +1407,83 @@ tbody tr.highlight-new {
     orders.forEach(o => {
       const card = document.createElement("div");
       card.className = "stalk-card";
+
+      const swing = o.swing_score || null;
+      const swingNum = swing ? Number(swing.score || 0) : 0;
+      const verdict = swing ? String(swing.verdict || "") : "";
+
+      // --- Flag badges (top pick / held / sector concentration) -----
+      const flags = [];
+      if (o.is_top_pick) flags.push('<span class="flag-badge flag-top-pick">TOP PICK</span>');
+      if (o.already_held) flags.push('<span class="flag-badge flag-held">HELD</span>');
+      if (o.sector_concentration) {
+        const ct = o.sector_concentration_count || 1;
+        flags.push(`<span class="flag-badge flag-sector">SECTOR x${ct}</span>`);
+      }
+      const flagsHtml = flags.length ? ` ${flags.join(" ")}` : "";
+
+      // --- Swing-score pill + breakdown tooltip ---------------------
+      let swingPill = "";
+      if (swing) {
+        const verdictCls = verdict.toLowerCase().replace("_", "-");
+        const reasons = (swing.reasons || []).join(" | ");
+        const tooltip = reasons ? ` title="${reasons.replace(/"/g,'&quot;')}"` : "";
+        swingPill = `<span class="swing-pill swing-${verdictCls}"${tooltip}>SWING ${swingNum}</span>`;
+      }
+
+      // --- Live-price status row ------------------------------------
+      let liveRow = "";
+      if (o.live_status) {
+        const statusText = {
+          IN_ZONE: "IN ZONE",
+          PAST_MAX_BUY: "PAST MAX BUY",
+          BELOW_ZONE: "BELOW ZONE",
+          BROKEN: "BROKEN",
+          UNKNOWN: "LIVE N/A",
+        }[o.live_status] || o.live_status;
+        const livePrice = o.live_price != null ? money(o.live_price) : "--";
+        const note = o.live_note || "";
+        liveRow = `
+          <div class="stalk-live-row stalk-live-${o.live_status}">
+            <span>${statusText}</span>
+            <span>${livePrice}</span>
+          </div>
+          <div style="margin-top:4px;font-size:10px;color:var(--text-muted)">${note}</div>
+        `;
+      }
+
+      let riskRow = "";
+      const eventRisk = o.event_risk || {};
+      const eventStatus = eventRisk.status || "UNKNOWN";
+      const intradayStatus = o.intraday_status || "NOT_REQUIRED";
+      const eventReasons = (eventRisk.reasons || []).join(" | ");
+      riskRow = `
+        <div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;font-size:10px;font-family:var(--font-mono);font-weight:700">
+          <span class="flag-badge ${eventStatus === "HIGH" || eventStatus === "UNKNOWN" ? "flag-held" : eventStatus === "MED" ? "flag-sector" : "flag-top-pick"}" title="${eventReasons.replace(/"/g,'&quot;')}">EVENT ${eventStatus}</span>
+          <span class="flag-badge ${intradayStatus === "CONFIRMED" || intradayStatus === "NOT_REQUIRED" ? "flag-top-pick" : "flag-sector"}">INTRADAY ${intradayStatus}</span>
+        </div>
+      `;
+
+      // Border-color override: TOP PICK first, then live status
+      if (o.is_top_pick) {
+        card.style.borderColor = "rgba(250, 204, 21, 0.7)";
+        card.style.boxShadow = "0 0 0 1px rgba(250, 204, 21, 0.4)";
+      } else if (o.live_status === "BROKEN" || o.live_status === "PAST_MAX_BUY") {
+        card.style.borderColor = "rgba(239, 68, 68, 0.5)";
+      } else if (o.live_status === "IN_ZONE") {
+        card.style.borderColor = "rgba(16, 185, 129, 0.6)";
+      }
+
       card.innerHTML = `
         <div class="stalk-card-header">
-          <span class="stalk-ticker">${o.ticker}</span>
+          <span class="stalk-ticker">${o.ticker}${flagsHtml}</span>
           <span class="grade-badge grade-${(o.grade||'C').toLowerCase()}">${o.grade||'C'}</span>
+          ${swingPill}
           <span class="signal-badge">${o.signal_type||""}</span>
           <span class="stalk-badge">STALK</span>
         </div>
+        ${liveRow}
+        ${riskRow}
         <div class="stalk-levels">
           <div class="stalk-level sl-entry">
             <div class="sl-label">Limit Buy</div>
@@ -1085,7 +1504,9 @@ tbody tr.highlight-new {
           <div class="sm-item">Zone: <span class="sm-val">${o.buy_zone||"--"}</span></div>
           <div class="sm-item">Time Stop: <span class="sm-val">${o.time_stop_days||"--"}D</span></div>
           <div class="sm-item">Score: <span class="sm-val">${Number(o.trade_score||0).toFixed(1)}</span></div>
+          ${o.bt_trades ? `<div class="sm-item">BT: <span class="sm-val">${o.bt_win_rate}%/${o.bt_trades}t</span></div>` : ''}
         </div>
+        ${swing && (swing.reasons||[]).length ? `<div style="margin-top:6px;font-size:10px;color:var(--text-secondary)">${(swing.reasons||[]).map(r=>`<span style="display:inline-block;background:rgba(96,165,250,0.1);border:1px solid rgba(96,165,250,0.25);padding:1px 6px;border-radius:3px;margin:1px 4px 1px 0">${r}</span>`).join("")}</div>` : ""}
         <div style="margin-top:8px;font-size:11px;color:var(--text-muted)">${o.entry_note||""}</div>
       `;
       grid.appendChild(card);
@@ -1258,6 +1679,371 @@ tbody tr.highlight-new {
     ).join("");
   }
 
+  // ---- My Positions ----------------------------------------------------
+  async function loadMyPositions() {
+    try {
+      const r = await fetch("/api/my-positions");
+      if (!r.ok) return;
+      const body = await r.json();
+      renderMyPositions(body.positions || [], body.summary || {});
+    } catch (e) {
+      console.error("loadMyPositions failed:", e);
+    }
+  }
+
+  function alertLabel(code) {
+    switch (code) {
+      case "SELL_STOP": return "SELL &ndash; STOP";
+      case "SELL_TARGET": return "SELL &ndash; TARGET";
+      case "SELL_TRAIL": return "SELL &ndash; TRAIL";
+      case "SELL_TIMESTOP": return "SELL &ndash; TIME";
+      case "WARN_STOP": return "NEAR STOP";
+      case "WARN_TARGET": return "NEAR TARGET";
+      case "WARN_TIMESTOP": return "TIME LEFT";
+      case "CLOSED": return "CLOSED";
+      default: return "HOLD";
+    }
+  }
+
+  function renderMyPositions(positions, summary) {
+    const tbody = $("positions-body");
+    const open = positions.filter(p => p.status === "OPEN");
+    const closed = positions.filter(p => p.status === "CLOSED");
+
+    // Sell-signal positions float to the top of the open list.
+    // SELL_TRAIL sits next to SELL_STOP / SELL_TARGET — all are immediate-action.
+    const alertWeight = {
+      SELL_STOP: 0, SELL_TARGET: 0, SELL_TRAIL: 0, SELL_TIMESTOP: 0,
+      WARN_STOP: 1, WARN_TARGET: 1, WARN_TIMESTOP: 1, HOLD: 2,
+    };
+    open.sort((a, b) => (alertWeight[a.alert] ?? 3) - (alertWeight[b.alert] ?? 3));
+    const rows = [...open, ...closed];
+
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="13" class="empty-state"><p>No positions yet. Add one after you buy.</p></td></tr>';
+    } else {
+      tbody.innerHTML = "";
+      rows.forEach(p => {
+        const tr = document.createElement("tr");
+        if (p.alert === "SELL_STOP" || p.alert === "SELL_TRAIL") tr.className = "row-sell-signal";
+        else if (p.alert === "SELL_TARGET") tr.className = "row-sell-signal row-target";
+        else if (p.alert === "SELL_TIMESTOP") tr.className = "row-sell-signal row-timestop";
+
+        const pnlPct = p.pnl_pct_live != null ? p.pnl_pct_live : p.pnl_pct;
+        const pnlDol = p.pnl_dollars_live != null ? p.pnl_dollars_live : p.pnl_dollars;
+        const pnlColor = (pnlPct != null && pnlPct >= 0) ? "text-green" : "text-red";
+        const cur = p.current_price != null ? money(p.current_price) : (p.exit_price != null ? money(p.exit_price) : "--");
+
+        const isClosed = p.status === "CLOSED";
+        const actions = isClosed
+          ? `<button class="delete-btn" onclick="deletePosition('${p.id}')">DELETE</button>`
+          : `<button class="close-btn" onclick="closePosition('${p.id}', ${p.current_price || 0})">CLOSE</button>
+             <button class="delete-btn" onclick="deletePosition('${p.id}')">DEL</button>`;
+
+        const reasonBits = [];
+        if (p.alert_reason) {
+          reasonBits.push(
+            `<div style="font-size:10px;color:var(--text-muted);margin-top:2px">${p.alert_reason}</div>`
+          );
+        }
+        if (p.earnings_warning) {
+          const soon = /in \d+d/.test(p.earnings_warning) || p.earnings_warning.includes("TODAY");
+          const cls = soon ? "flag-earnings" : "flag-earnings-soon";
+          reasonBits.push(
+            `<div style="margin-top:3px"><span class="flag-badge ${cls}">${p.earnings_warning}</span></div>`
+          );
+        }
+        // Swing advisories — partial exit ladder, quick-profit take, time-stop countdown.
+        // We show the highest-priority advisory once; spamming three boxes is noise.
+        if (p.partial_exit) {
+          reasonBits.push(
+            `<div class="advisory-box advisory-partial">+${p.partial_exit.r_multiple}R &middot; ${p.partial_exit.action} (~${p.partial_exit.sell_shares} sh)</div>`
+          );
+        } else if (p.quick_profit) {
+          reasonBits.push(
+            `<div class="advisory-box advisory-quick">${p.quick_profit.action}</div>`
+          );
+        }
+        if (p.time_stop_warn && p.alert !== "WARN_TIMESTOP" && p.alert !== "SELL_TIMESTOP") {
+          const daysLeft = (p.days_left != null) ? p.days_left : "";
+          reasonBits.push(
+            `<div class="advisory-box advisory-timestop">${daysLeft} day${daysLeft === 1 ? "" : "s"} left until forced exit</div>`
+          );
+        }
+        const reason = reasonBits.join("");
+
+        // Stop cell: show effective stop when trailing has overtaken the hard stop.
+        let stopCell = p.stop ? money(p.stop) : "--";
+        if (p.effective_stop != null && p.stop != null && p.effective_stop > p.stop + 0.005) {
+          stopCell = `${money(p.effective_stop)} <span style="font-size:9px;color:var(--accent-purple);font-weight:700">TRAIL</span>
+                      <div style="font-size:10px;color:var(--text-muted)">hard ${money(p.stop)}</div>`;
+        } else if (p.effective_stop != null && p.stop == null) {
+          stopCell = `${money(p.effective_stop)} <span style="font-size:9px;color:var(--accent-purple);font-weight:700">TRAIL</span>`;
+        }
+
+        tr.innerHTML = `
+          <td class="ticker-cell">${p.ticker}</td>
+          <td>
+            <span class="pos-alert pos-alert-${p.alert}">${alertLabel(p.alert)}</span>
+            ${reason}
+          </td>
+          <td class="mono">${money(p.entry_price)}<div style="font-size:10px;color:var(--text-muted)">${p.entry_date || ""}</div></td>
+          <td class="mono">${cur}</td>
+          <td class="mono ${pnlColor}">${pnlDol != null ? (pnlDol >= 0 ? "+$" : "-$") + Math.abs(pnlDol).toFixed(2) : "--"}</td>
+          <td class="mono ${pnlColor}">${pnlPct != null ? (pnlPct >= 0 ? "+" : "") + pnlPct.toFixed(2) + "%" : "--"}</td>
+          <td class="mono" style="color:var(--accent-red)">${stopCell}</td>
+          <td class="mono" style="color:var(--accent-green)">${p.target ? money(p.target) : "--"}</td>
+          <td class="mono">${p.dist_to_stop_pct != null ? p.dist_to_stop_pct.toFixed(2) + "%" : "--"}</td>
+          <td class="mono">${p.dist_to_target_pct != null ? p.dist_to_target_pct.toFixed(2) + "%" : "--"}</td>
+          <td class="mono" ${p.time_stop_warn ? 'style="color:var(--accent-amber);font-weight:700"' : ""}>${p.days_held != null ? p.days_held : "--"}/${p.time_stop_days}${p.time_stop_warn ? ' <span style="font-size:9px">!</span>' : ""}</td>
+          <td class="mono">${p.shares}</td>
+          <td><div class="pos-actions">${actions}</div></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    // Header summary
+    const ps = $("pos-summary");
+    const openCt = open.length;
+    const sellCount = open.filter(p => ["SELL_STOP","SELL_TARGET","SELL_TRAIL","SELL_TIMESTOP"].includes(p.alert)).length;
+    const pieces = [
+      `<span class="ps-item">Open: <span class="ps-val">${openCt}</span></span>`,
+    ];
+    if (sellCount > 0) {
+      pieces.push(`<span class="ps-item">Sell alerts: <span class="ps-val red">${sellCount}</span></span>`);
+    }
+    if (summary.closed > 0) {
+      const wr = summary.win_rate != null ? summary.win_rate.toFixed(1) + "%" : "--";
+      const pnl = summary.total_pnl_dollars != null ? ("$" + summary.total_pnl_dollars.toFixed(2)) : "--";
+      const pnlCls = (summary.total_pnl_dollars || 0) >= 0 ? "green" : "red";
+      pieces.push(`<span class="ps-item">Closed: <span class="ps-val">${summary.closed}</span></span>`);
+      pieces.push(`<span class="ps-item">Win: <span class="ps-val">${wr}</span></span>`);
+      pieces.push(`<span class="ps-item">P&amp;L: <span class="ps-val ${pnlCls}">${pnl}</span></span>`);
+    }
+    ps.innerHTML = pieces.join("");
+
+    // Audible chime only when a new SELL alert appears (not on every refresh)
+    if (sellCount > window.__prevSellAlertCount && window.__prevSellAlertCount !== undefined) {
+      playNotificationSound();
+      document.title = `(SELL x${sellCount}) Titan Pro`;
+      setTimeout(() => { document.title = "Titan Pro Scanner — Live"; }, 10000);
+    }
+    window.__prevSellAlertCount = sellCount;
+  }
+
+  // --- Preflight validator: fires as user types --------------------
+  let _preflightTimer = null;
+  async function runPreflight() {
+    const ticker = ($("pos-ticker").value || "").toUpperCase().trim();
+    const entry = parseFloat($("pos-entry").value);
+    const shares = parseFloat($("pos-shares").value);
+    const stop = $("pos-stop").value ? parseFloat($("pos-stop").value) : null;
+    const panel = $("pos-preflight");
+
+    if (!ticker || !entry || !shares) {
+      panel.style.display = "none";
+      panel.innerHTML = "";
+      return;
+    }
+
+    try {
+      const qs = new URLSearchParams({
+        ticker, entry_price: entry, shares,
+        ...(stop != null ? { stop } : {}),
+      });
+      const r = await fetch(`/api/my-positions/validate?${qs}`);
+      if (!r.ok) { panel.style.display = "none"; return; }
+      const body = await r.json();
+      if (body.status !== "success") { panel.style.display = "none"; return; }
+
+      const risk = body.risk || {};
+      const sanity = body.sanity || {};
+      const live = body.live_price;
+      const bits = [];
+
+      // Risk
+      const riskColor = risk.level === "HARD" ? "var(--accent-red)"
+                      : risk.level === "SOFT" ? "var(--accent-amber)"
+                      : "var(--accent-green)";
+      bits.push(
+        `<span style="color:${riskColor}"><strong>Risk:</strong> $${Number(risk.risk_dollars||0).toFixed(2)} `
+        + `(${Number(risk.risk_pct||0).toFixed(2)}% of account)</span>`
+      );
+
+      // Live price + sanity
+      if (live != null) {
+        const sanColor = sanity.ok ? "var(--text-muted)" : "var(--accent-red)";
+        const div = sanity.divergence_pct != null ? `±${sanity.divergence_pct.toFixed(1)}%` : "";
+        bits.push(
+          `<span style="color:${sanColor}"><strong>Live:</strong> $${Number(live).toFixed(2)} ${div}</span>`
+        );
+      } else {
+        bits.push(`<span style="color:var(--text-muted)"><strong>Live:</strong> unavailable</span>`);
+      }
+
+      // Messages
+      const warnings = [];
+      if (risk.msg) warnings.push(risk.msg);
+      if (sanity.msg) warnings.push(sanity.msg);
+
+      // Auto-toggle FORCE requirement hint
+      const forceNeeded = (risk.level === "SOFT" || !sanity.ok);
+      const hardBlock = (risk.level === "HARD");
+      if (hardBlock) {
+        warnings.push('<strong style="color:var(--accent-red)">BLOCKED — cannot add. Reduce shares or tighten stop.</strong>');
+      } else if (forceNeeded) {
+        warnings.push('<strong style="color:var(--accent-amber)">Tick FORCE to override.</strong>');
+      }
+
+      panel.style.display = "block";
+      panel.innerHTML = bits.join(" &nbsp;|&nbsp; ")
+        + (warnings.length ? `<div style="margin-top:4px;color:var(--text-secondary)">${warnings.join(" · ")}</div>` : "");
+    } catch (e) {
+      panel.style.display = "none";
+    }
+  }
+
+  function schedulePreflight() {
+    if (_preflightTimer) clearTimeout(_preflightTimer);
+    _preflightTimer = setTimeout(runPreflight, 400);
+  }
+
+  async function addPosition() {
+    const ticker = ($("pos-ticker").value || "").toUpperCase().trim();
+    const entry = parseFloat($("pos-entry").value);
+    const shares = parseFloat($("pos-shares").value);
+    const entryDate = $("pos-date").value || null;
+    const stop = $("pos-stop").value ? parseFloat($("pos-stop").value) : null;
+    const target = $("pos-target").value ? parseFloat($("pos-target").value) : null;
+    const timeStop = parseInt($("pos-timestop").value) || 5;
+    const force = $("pos-force") ? $("pos-force").checked : false;
+    const hint = $("pos-add-hint");
+
+    if (!ticker || !entry || !shares) {
+      hint.className = "error-hint";
+      hint.textContent = "Ticker, entry price, and shares are required.";
+      return;
+    }
+
+    try {
+      const r = await fetch("/api/my-positions", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          ticker, entry_price: entry, shares,
+          entry_date: entryDate, stop, target, time_stop_days: timeStop, force,
+        }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        const detail = err.detail || {};
+        hint.className = "error-hint";
+
+        // detail may be string or structured dict with `kind`
+        if (typeof detail === "string") {
+          hint.textContent = detail;
+        } else {
+          switch (detail.kind) {
+            case "RISK_TOO_HIGH":
+              hint.textContent = `BLOCKED (hard cap): ${detail.msg}`;
+              break;
+            case "RISK_SOFT_WARN":
+              hint.textContent = `Soft warn: ${detail.msg} — tick FORCE and retry.`;
+              break;
+            case "ENTRY_PRICE_DIVERGENT":
+              hint.textContent = `${detail.msg} — tick FORCE to override.`;
+              break;
+            case "DAILY_LOSS_CAP_HIT":
+              hint.textContent = `${detail.msg}`;
+              break;
+            case "NOT_CURRENT_BUY":
+              hint.textContent = `${detail.msg}`;
+              break;
+            default:
+              hint.textContent = detail.msg || JSON.stringify(detail);
+          }
+        }
+        return;
+      }
+      // Clear the form
+      $("pos-ticker").value = "";
+      $("pos-entry").value = "";
+      $("pos-shares").value = "";
+      $("pos-stop").value = "";
+      $("pos-target").value = "";
+      if ($("pos-force")) $("pos-force").checked = false;
+      $("pos-preflight").style.display = "none";
+      hint.className = "plan-hint";
+      hint.textContent = "Added.";
+      setTimeout(() => { hint.textContent = ""; }, 2000);
+      await loadMyPositions();
+    } catch (e) {
+      hint.className = "error-hint";
+      hint.textContent = "Network error.";
+    }
+  }
+
+  async function closePosition(id, suggestedExit) {
+    const val = prompt("Enter exit price:", suggestedExit ? suggestedExit.toFixed(2) : "");
+    if (val == null) return;
+    const exit = parseFloat(val);
+    if (!exit || exit <= 0) {
+      alert("Invalid exit price.");
+      return;
+    }
+    const r = await fetch(`/api/my-positions/${id}/close`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({exit_price: exit, reason: "MANUAL"}),
+    });
+    if (!r.ok) {
+      alert("Failed to close position.");
+      return;
+    }
+    await loadMyPositions();
+  }
+
+  async function deletePosition(id) {
+    if (!confirm("Delete this position from the tracker? (Doesn't touch real brokerage.)")) return;
+    const r = await fetch(`/api/my-positions/${id}`, {method: "DELETE"});
+    if (!r.ok) {
+      alert("Failed to delete.");
+      return;
+    }
+    await loadMyPositions();
+  }
+
+  // Auto-fill stop/target from the latest scan when user types a ticker
+  async function maybeAutofillPlan() {
+    const ticker = ($("pos-ticker").value || "").toUpperCase().trim();
+    const hint = $("pos-add-hint");
+    if (!ticker) {
+      hint.textContent = "";
+      return;
+    }
+    try {
+      const r = await fetch(`/api/my-positions/plan/${encodeURIComponent(ticker)}`);
+      const body = await r.json();
+      if (body.status !== "success") {
+        hint.className = "plan-hint";
+        hint.textContent = `${ticker} not in latest scan — enter stop/target manually.`;
+        return;
+      }
+      const plan = body.plan;
+      if (plan.stop && !$("pos-stop").value) $("pos-stop").value = Number(plan.stop).toFixed(2);
+      if (plan.target && !$("pos-target").value) $("pos-target").value = Number(plan.target).toFixed(2);
+      if (plan.time_stop_days) $("pos-timestop").value = plan.time_stop_days;
+      if (plan.price && !$("pos-entry").value) $("pos-entry").value = Number(plan.price).toFixed(2);
+      hint.className = "plan-hint";
+      hint.textContent = `Plan auto-filled from ${plan.tier || "scan"} (${plan.signal_type || "signal"})`;
+    } catch (e) { /* silent */ }
+  }
+
+  window.addPosition = addPosition;
+  window.closePosition = closePosition;
+  window.deletePosition = deletePosition;
+
   // ---- WebSocket -------------------------------------------------------
   function connectWS() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -1293,12 +2079,15 @@ tbody tr.highlight-new {
           scanResultCount++;
           renderScanResult(msg.data);
 
-          // Auto-refresh: full page reload after scan completes (skip first load)
+          // Auto-refresh: visual flash to signal new data (WS already renders in-place)
           if (autoRefresh && scanResultCount > 1) {
-            // Brief flash to signal refresh, then reload
             document.body.classList.add("refresh-flash");
-            setTimeout(() => location.reload(), 600);
+            setTimeout(() => document.body.classList.remove("refresh-flash"), 600);
           }
+        }
+
+        if (msg.type === "my_positions_changed") {
+          loadMyPositions();
         }
 
         if (msg.type === "scan_error") {
@@ -1325,6 +2114,29 @@ tbody tr.highlight-new {
 
   // ---- Boot ------------------------------------------------------------
   connectWS();
+
+  // Default entry date = today (YYYY-MM-DD)
+  (function initPositionForm() {
+    const d = new Date();
+    const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+    const el = $("pos-date");
+    if (el) el.value = iso;
+    const tickerEl = $("pos-ticker");
+    if (tickerEl) {
+      tickerEl.addEventListener("blur", () => { maybeAutofillPlan(); schedulePreflight(); });
+      tickerEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { maybeAutofillPlan(); schedulePreflight(); e.preventDefault(); }
+      });
+    }
+    // Preflight fires as the user types entry / shares / stop
+    ["pos-entry", "pos-shares", "pos-stop"].forEach(id => {
+      const inp = $(id);
+      if (inp) inp.addEventListener("input", schedulePreflight);
+    });
+  })();
+
+  loadMyPositions();
+  setInterval(loadMyPositions, 60000);  // refresh alerts every minute between scans
 
   // Update "time ago" labels every 30s
   setInterval(() => {

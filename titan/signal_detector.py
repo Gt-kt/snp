@@ -131,10 +131,13 @@ def _compute_technicals(df: pd.DataFrame) -> dict:
     vol_10d = _safe(df["Volume"].iloc[-10:-5].mean(), volume) or 1.0
     vol_trend = vol_5d / vol_10d if vol_10d > 0 else 1.0
 
-    # OBV
+    # OBV slope (normalized by average volume over 10 bars)
     obv = (np.sign(df["Close"].diff()) * df["Volume"]).cumsum()
     obv_val = _safe(obv.iloc[-1])
     obv_sma = _safe(obv.rolling(20).mean().iloc[-1])
+    # Compute OBV slope: change over last 10 bars, normalized by avg volume
+    obv_10_ago = _safe(obv.iloc[-11]) if len(obv) >= 11 else obv_val
+    obv_slope = (obv_val - obv_10_ago) / (avg_volume * 10) if avg_volume > 0 else 0.0
 
     # MACD histogram
     ema12 = df["Close"].ewm(span=12, adjust=False).mean()
@@ -180,6 +183,7 @@ def _compute_technicals(df: pd.DataFrame) -> dict:
         "vol_trend": vol_trend,
         "obv": obv_val,
         "obv_sma": obv_sma,
+        "obv_slope": obv_slope,
         "macd_hist": macd_hist_val,
         "macd_hist_prev": macd_hist_prev,
         "sma50_trend": sma50_trend,
@@ -193,14 +197,20 @@ def _compute_technicals(df: pd.DataFrame) -> dict:
 
 def relative_strength(stock_df: pd.DataFrame, spy_df: pd.DataFrame, window: int = 60) -> float | None:
     """Return relative strength of stock vs SPY over `window` bars.
-    Positive = outperforming SPY."""
+    Positive = outperforming SPY.  Aligns on DateTimeIndex so halted
+    stocks or mismatched row counts don't cause stale comparisons."""
     if stock_df is None or spy_df is None or stock_df.empty or spy_df.empty:
         return None
-    if len(stock_df) < window + 1 or len(spy_df) < window + 1:
-        return None
     try:
-        stock_return = (stock_df["Close"].iloc[-1] / stock_df["Close"].iloc[-window - 1]) - 1
-        spy_return = (spy_df["Close"].iloc[-1] / spy_df["Close"].iloc[-window - 1]) - 1
+        # Align on date index, drop any rows where either side is missing
+        aligned = pd.DataFrame({
+            "stock": stock_df["Close"],
+            "spy": spy_df["Close"],
+        }).dropna()
+        if len(aligned) < window + 1:
+            return None
+        stock_return = (aligned["stock"].iloc[-1] / aligned["stock"].iloc[-window - 1]) - 1
+        spy_return = (aligned["spy"].iloc[-1] / aligned["spy"].iloc[-window - 1]) - 1
         return float(stock_return - spy_return)
     except Exception:
         return None
@@ -300,8 +310,8 @@ def _is_momentum(t: dict) -> bool:
 
 def _is_breakout(t: dict) -> bool:
     return (
-        t["close"] >= t["high_20"] * 0.97
-        and t["volume_ratio"] > 1.1
+        t["close"] >= t["high_20"] * 0.99
+        and t["volume_ratio"] > 1.3
         and t["change_1d"] > -0.5
         and t["rsi"] < 78.0
     )
@@ -335,13 +345,13 @@ def signal_age_bars(df: pd.DataFrame, signal_type: str, spy_df: pd.DataFrame = N
     if df is None or df.empty or len(df) < 62:
         return -1
 
-    # Check if signal is active on the latest bar
+    # Check if signal is active on the latest bar (among ALL active, not just top-ranked)
     t_now = _compute_technicals(df)
     if not t_now:
         return -1
     rs = relative_strength(df, spy_df) if spy_df is not None else None
-    sig, _, _ = _classify_signal(t_now, rs)
-    if sig != signal_type:
+    active_now = _get_all_active_signals(t_now, rs)
+    if signal_type not in active_now:
         return -1
 
     # Walk backwards to find when it first appeared
@@ -354,8 +364,8 @@ def signal_age_bars(df: pd.DataFrame, signal_type: str, spy_df: pd.DataFrame = N
         if not t_prev:
             break
         rs_prev = relative_strength(sub, spy_df) if spy_df is not None else None
-        sig_prev, _, _ = _classify_signal(t_prev, rs_prev)
-        if sig_prev == signal_type:
+        active_prev = _get_all_active_signals(t_prev, rs_prev)
+        if signal_type in active_prev:
             age = lookback
         else:
             break
@@ -431,6 +441,36 @@ def _classify_signal(t: dict, rs_score: float | None) -> tuple[str | None, float
     return candidates[0]
 
 
+def _get_all_active_signals(t: dict, rs_score: float | None) -> set[str]:
+    """Return the set of ALL active signal type names (regardless of rank)."""
+    if not t:
+        return set()
+    active = set()
+    if _is_vcp(t):
+        active.add("VCP")
+    if _is_pre_break(t):
+        active.add("PRE_BREAK")
+    if _is_pullback(t):
+        active.add("PULLBACK")
+    if _is_accumulation(t):
+        active.add("ACCUM")
+    if _is_relative_strength(t):
+        active.add("REL_STR")
+    if _is_momentum_rank(t, rs_score):
+        active.add("MOM_RANK")
+    if _is_momentum(t):
+        active.add("MOMENTUM")
+    if _is_breakout(t):
+        active.add("BREAKOUT")
+    if _is_volume_spike(t):
+        active.add("VOL_SPIKE")
+    if _is_early_reversal(t):
+        active.add("EARLY_REV")
+    if _is_dip_buy(t):
+        active.add("DIP_BUY")
+    return active
+
+
 def detect_signal(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> tuple[str | None, float, list[str], dict]:
     """Detect the primary signal type for a stock.
 
@@ -455,9 +495,9 @@ def detect_signal(df: pd.DataFrame, spy_df: pd.DataFrame = None) -> tuple[str | 
     elif t["macd_hist"] > t["macd_hist_prev"] > 0:
         strength += 0.5
 
-    # OBV confirmation
-    if t["obv"] > t["obv_sma"]:
-        strength += 0.5
+    # OBV confirmation — slope-based (normalized by avg volume over 10 bars)
+    if t["obv_slope"] > 0.05:
+        strength += 0.2
 
     # RS bonus
     if rs_score is not None and rs_score > 0.05:

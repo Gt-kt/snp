@@ -1,23 +1,18 @@
 @echo off
-title Titan Trade - Auto Mode
-color 0A
-
-echo.
-echo  ████████╗██╗████████╗ █████╗ ███╗   ██╗    ████████╗██████╗  █████╗ ██████╗ ███████╗
-echo  ╚══██╔══╝██║╚══██╔══╝██╔══██╗████╗  ██║    ╚══██╔══╝██╔══██╗██╔══██╗██╔══██╗██╔════╝
-echo     ██║   ██║   ██║   ███████║██╔██╗ ██║       ██║   ██████╔╝███████║██║  ██║█████╗  
-echo     ██║   ██║   ██║   ██╔══██║██║╚██╗██║       ██║   ██╔══██╗██╔══██║██║  ██║██╔══╝  
-echo     ██║   ██║   ██║   ██║  ██║██║ ╚████║       ██║   ██║  ██║██║  ██║██████╔╝███████╗
-echo     ╚═╝   ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝       ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝
-echo.
-echo  AUTO MODE - Just trust the results!
-echo  ==================================
-echo.
+setlocal
+title Titan Trade - Pro Swing Scan
 
 cd /d "%~dp0"
-python titan_trade_v2.py
 
 echo.
-echo  ==================================
-echo  Scan complete! Press any key to close...
+echo TITAN TRADE - PRO SWING SCAN
+echo ============================
+echo Manual mode only. No broker orders are sent.
+echo.
+
+python titan_trade_v3.py --pro
+
+echo.
+echo ============================
+echo Scan complete. Press any key to close...
 pause > nul

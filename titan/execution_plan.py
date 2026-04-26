@@ -15,9 +15,14 @@ from titan.signal_detector import EARLY_SIGNAL_TYPES, BREAKOUT_SIGNAL_TYPES, _sa
 # ---------------------------------------------------------------------------
 
 def classify_gap_risk(avg_open_gap_pct: float = 0.0, gap_above_1pct_prob: float = 0.0) -> str:
-    if avg_open_gap_pct > 1.5 or gap_above_1pct_prob > 0.30:
+    prob_pct = (
+        float(gap_above_1pct_prob) * 100.0
+        if 0.0 <= float(gap_above_1pct_prob) <= 1.0
+        else float(gap_above_1pct_prob)
+    )
+    if avg_open_gap_pct > 1.5 or prob_pct > 30.0:
         return "HIGH"
-    if avg_open_gap_pct < 0.5 and gap_above_1pct_prob < 0.10:
+    if avg_open_gap_pct < 0.5 and prob_pct < 10.0:
         return "LOW"
     return "MED"
 
@@ -105,12 +110,15 @@ def build_execution_plan(
 
     buy_zone_low = min(buy_zone_low, max_buy_price)
 
-    # Time stop
-    time_stop_days = min(7, best_horizon + (1 if signal_type in EARLY_SIGNAL_TYPES else 0))
+    # Time stop — US swing trades need more room than KOSPI day trades.
+    # Base: best_horizon × 2 (allow full swing cycle), min 5 days.
+    time_stop_days = max(5, min(10, best_horizon * 2 + 2))
+    if signal_type in EARLY_SIGNAL_TYPES:
+        time_stop_days += 1  # Early setups may need more time to develop
     if move_up_prob >= 60 and move_expected_return >= 0.8:
-        time_stop_days = min(8, time_stop_days + 1)
+        time_stop_days = min(12, time_stop_days + 2)  # High-conviction → more room
     if gap_risk == "HIGH":
-        time_stop_days = max(1, time_stop_days - 1)
+        time_stop_days = max(3, time_stop_days - 1)
 
     return {
         "buy_zone_low": round(buy_zone_low, 2),
@@ -144,5 +152,5 @@ def fresh_entry_is_buyable(price: float, plan: dict) -> bool:
 
 # Chase tolerance by tier
 VALIDATED_MAX_CHASE_PCT = 0.0    # Fresh validated: must be inside plan
-ACTIVE_MAX_CHASE_PCT = 0.20      # Active setups: tiny chase OK
-OPPORTUNITY_MAX_CHASE_PCT = 1.0   # Opportunity: slight chase if plan allows pullback
+ACTIVE_MAX_CHASE_PCT = 0.50      # Active setups: up to 0.5% above max buy (US stocks have wider spreads)
+OPPORTUNITY_MAX_CHASE_PCT = 1.5   # Opportunity: slight chase if plan allows pullback

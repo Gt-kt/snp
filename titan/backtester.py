@@ -382,8 +382,8 @@ def run_backtest(data: pd.DataFrame, lookback_days: int = 9999) -> list[dict]:
         regime_info = _detect_market_regime(spy_slice)
         regime = regime_info.get("regime", "SIDEWAYS")
 
-        if regime == "STRONG_BEAR":
-            continue
+        # Still process STRONG_BEAR dates — the scanner's bear_boost
+        # and tier classification already tighten filters.
 
         # Quick breadth calc
         bullish = 0

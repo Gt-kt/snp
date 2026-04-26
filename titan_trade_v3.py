@@ -72,6 +72,8 @@ from titan import (
 from titan.alpaca_executor import AlpacaExecutor
 from titan.market import SectorAnalyzer
 from titan.opportunity import build_scan_export_data, build_scan_opportunity_summary
+from titan.decision import build_trade_decision
+from titan.swing_score import rank_stalk_orders, top_picks, TOP_PICK_MIN
 
 
 def setup_logging(level="INFO"):
@@ -257,12 +259,17 @@ def get_precision_filter_rejection(strategy_name, mkt_status, actionability, rob
 def should_build_watchlist(results, settings):
     """Decide whether to build the broader momentum watchlist.
 
-    v9.5: Always build the watchlist. Stalking candidates are the primary
-    signal for pre-breakout entries, not a fallback for empty scan days.
+    Respect the runtime knobs:
+      - build_watchlist disables it entirely
+      - always_build_watchlist forces it on
+      - watchlist_if_fewer_than builds only when the actionable list is thin
     """
     if not settings.get("build_watchlist", True):
         return False
-    return True
+    if settings.get("always_build_watchlist", False):
+        return True
+    threshold = max(int(settings.get("watchlist_if_fewer_than", 3) or 0), 0)
+    return len(results or []) < threshold
 
 
 def evaluate_recent_oos_channel(oos_stats, min_trades, min_pf, min_expectancy):
@@ -3533,7 +3540,27 @@ def main():
     # ── Pro Scanner (KOSPI-style) ─────────────────────────────────────────
     if getattr(args, 'pro', False):
         from titan.pro_scanner import pro_scan
+        manual_positions = {}
         try:
+            try:
+                from titan.my_positions import MyPositions
+                manual_positions = {
+                    p["ticker"]: {
+                        "entry_price": p.get("entry_price"),
+                        "stop_loss": p.get("stop"),
+                        "shares": p.get("shares"),
+                        "sector": p.get("sector"),
+                    }
+                    for p in MyPositions().list_open()
+                    if p.get("ticker")
+                }
+                if manual_positions:
+                    settings["open_positions"] = {
+                        **(settings.get("open_positions") or {}),
+                        **manual_positions,
+                    }
+            except Exception as exc:
+                logger.warning(f"Could not load manual positions for scan risk filter: {exc}")
             pro_results = pro_scan(settings=settings, market_data_bundle=market_data_bundle)
         except KeyboardInterrupt:
             print("\n  Cancelled.")
@@ -3560,9 +3587,39 @@ def main():
                 "total_signals": pro_results["total_signals"],
                 "timestamp": pro_results["scan_timestamp"],
             }
+            try:
+                row_lookup = {
+                    row.get("ticker"): row
+                    for key in ("validated", "active", "opportunity", "watchlist")
+                    for row in export.get(key, [])
+                    if row.get("ticker")
+                }
+                rank_stalk_orders(
+                    export["stalk_orders"],
+                    row_lookup=lambda ticker: row_lookup.get(ticker),
+                )
+                export["top_picks"] = top_picks(
+                    export["stalk_orders"], limit=5, min_score=TOP_PICK_MIN
+                )
+                export["trade_decision"] = build_trade_decision(
+                    export,
+                    open_positions=[
+                        {"ticker": ticker, **payload}
+                        for ticker, payload in manual_positions.items()
+                    ],
+                    settings=settings,
+                )
+            except Exception as exc:
+                logger.warning(f"Could not build final trade decision: {exc}")
             with open("data/latest_scan.json", "w") as f:
                 json.dump(export, f, indent=2, default=str)
             print(f"\n  Exported to data/latest_scan.json")
+            decision = export.get("trade_decision") or {}
+            if decision:
+                print("\n  FINAL DECISION")
+                print(f"    {decision.get('action')}: {decision.get('headline')}")
+                if decision.get("reason"):
+                    print(f"    {decision.get('reason')}")
         except Exception as e:
             print(f"\n  Export failed: {e}")
         return
