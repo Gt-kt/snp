@@ -51,7 +51,8 @@ from titan.position_risk import (
 from titan.swing_score import rank_stalk_orders, top_picks, TOP_PICK_MIN
 from titan.decision import build_trade_decision
 from titan.event_risk import assess_event_risk
-from titan.config import ACCOUNT_SIZE, MAX_DAILY_LOSS_PCT
+from titan.config import ACCOUNT_SIZE, MAX_DAILY_LOSS_PCT, RISK_PER_TRADE
+from titan.journal import append_journal_event
 from titan.storage import write_json_atomic
 
 # Earnings checker — wrap yfinance behind a safe shim (the dashboard degrades
@@ -116,6 +117,7 @@ except ModuleNotFoundError:
 DATA_DIR = Path(os.environ.get("TITAN_DATA_DIR", "data")).resolve()
 SCAN_FILE = DATA_DIR / "latest_scan.json"
 STALE_SCAN_MINUTES = int(os.environ.get("TITAN_STALE_SCAN_MINUTES", "45") or "45")
+TRADE_JOURNAL_FILE = Path(os.environ.get("TITAN_TRADE_JOURNAL", "trade_journal.jsonl")).resolve()
 
 # ---------------------------------------------------------------------------
 # App state
@@ -471,6 +473,16 @@ def _run_scan_sync(settings: dict) -> dict:
         logger.error(f"Position-aware augmentation failed: {exc}\n{traceback.format_exc()}")
 
     write_json_atomic(SCAN_FILE, export, indent=2)
+    _journal("scan_completed", {
+        "timestamp": export.get("timestamp"),
+        "regime": export.get("regime"),
+        "validated": len(export.get("validated") or []),
+        "active": len(export.get("active") or []),
+        "opportunity": len(export.get("opportunity") or []),
+        "watchlist": len(export.get("watchlist") or []),
+        "stalk_orders": len(export.get("stalk_orders") or []),
+        "decision": export.get("trade_decision"),
+    })
     return export
 
 
@@ -1034,7 +1046,22 @@ def build_health_payload() -> dict:
         "scan_file_exists": SCAN_FILE.exists(),
         "positions_ok": positions_ok,
         "positions_error": positions_error,
+        "default_risk_dollars": RISK_PER_TRADE,
     }
+
+
+def current_scan_age_minutes() -> Optional[float]:
+    scan_time = _parse_iso_datetime(state.last_scan_time)
+    if not scan_time:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - scan_time).total_seconds() / 60.0)
+
+
+def _journal(event_type: str, payload: dict) -> None:
+    try:
+        append_journal_event(event_type, payload, path=TRADE_JOURNAL_FILE)
+    except Exception as exc:
+        logger.warning(f"Failed to write trade journal: {exc}")
 
 
 def _enrich_positions(positions: List[dict]) -> List[dict]:
@@ -1108,6 +1135,37 @@ async def validate_new_position(ticker: str, entry_price: float, shares: float,
     }
 
 
+@app.get("/api/position-size")
+async def calculate_position_size(
+    entry_price: float,
+    stop: float,
+    risk_dollars: float = RISK_PER_TRADE,
+):
+    entry = float(entry_price or 0.0)
+    stop_value = float(stop or 0.0)
+    risk = float(risk_dollars or 0.0)
+    if entry <= 0 or stop_value <= 0 or stop_value >= entry or risk <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "kind": "SIZE_INPUT_INVALID",
+                "msg": "Entry must be above stop and risk dollars must be positive.",
+            },
+        )
+    risk_per_share = entry - stop_value
+    shares = int(risk // risk_per_share)
+    return {
+        "status": "success",
+        "entry_price": entry,
+        "stop": stop_value,
+        "risk_dollars": risk,
+        "risk_per_share": round(risk_per_share, 4),
+        "shares": max(0, shares),
+        "estimated_risk": round(max(0, shares) * risk_per_share, 2),
+        "estimated_cost": round(max(0, shares) * entry, 2),
+    }
+
+
 @app.get("/api/my-positions/plan/{ticker}")
 async def lookup_plan(ticker: str):
     """Auto-fill helper: return the scanner's stop/target/time-stop for a ticker
@@ -1123,6 +1181,21 @@ async def lookup_plan(ticker: str):
 async def add_my_position(req: AddPositionRequest, _auth: None = Depends(require_dashboard_auth)):
     ticker = (req.ticker or "").upper().strip()
     _validate_manual_swing_plan(req)
+
+    scan_age = current_scan_age_minutes()
+    if (scan_age is None or scan_age > STALE_SCAN_MINUTES) and not req.force:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "kind": "STALE_SCAN",
+                "msg": (
+                    "Latest scan is stale or unavailable. Run a fresh scan before adding a manual position, "
+                    "or use FORCE only for an intentional override."
+                ),
+                "scan_age_minutes": round(scan_age, 1) if scan_age is not None else None,
+                "stale_after_minutes": STALE_SCAN_MINUTES,
+            },
+        )
 
     # -------- Gate 1: Hard risk cap -----------------------------------
     risk = validate_position_risk(req.entry_price, req.stop, req.shares)
@@ -1221,6 +1294,19 @@ async def add_my_position(req: AddPositionRequest, _auth: None = Depends(require
         pos, current_price=cp, earnings_checker=_earnings_days_until
     )
     await broadcast({"type": "my_positions_changed", "reason": "added"})
+    _journal("position_added", {
+        "ticker": ticker,
+        "entry_price": req.entry_price,
+        "shares": req.shares,
+        "stop": req.stop,
+        "target": req.target,
+        "time_stop_days": req.time_stop_days or DEFAULT_TIME_STOP_DAYS,
+        "force": req.force,
+        "override_reason": req.override_reason,
+        "scan_age_minutes": round(scan_age, 1) if scan_age is not None else None,
+        "risk": risk,
+        "sanity": sanity,
+    })
     return {
         "status": "success",
         "position": enriched,
@@ -1271,6 +1357,12 @@ async def update_my_position(
     if updated is None:
         raise HTTPException(status_code=404, detail="Position not found")
     await broadcast({"type": "my_positions_changed", "reason": "updated"})
+    _journal("position_updated", {
+        "position_id": position_id,
+        "ticker": updated.get("ticker"),
+        "changes": {k: v for k, v in req.model_dump().items() if v is not None},
+        "risk": risk,
+    })
     return {"status": "success", "position": updated}
 
 
@@ -1294,6 +1386,15 @@ async def close_my_position(
     if closed is None:
         raise HTTPException(status_code=404, detail="Position not found")
     await broadcast({"type": "my_positions_changed", "reason": "closed"})
+    _journal("position_closed", {
+        "position_id": position_id,
+        "ticker": closed.get("ticker"),
+        "exit_price": req.exit_price,
+        "exit_date": req.exit_date,
+        "reason": req.reason or "MANUAL",
+        "pnl_dollars": closed.get("pnl_dollars"),
+        "pnl_pct": closed.get("pnl_pct"),
+    })
     return {"status": "success", "position": closed}
 
 
@@ -1306,6 +1407,7 @@ async def delete_my_position(position_id: str, _auth: None = Depends(require_das
     if not ok:
         raise HTTPException(status_code=404, detail="Position not found")
     await broadcast({"type": "my_positions_changed", "reason": "deleted"})
+    _journal("position_deleted", {"position_id": position_id})
     return {"status": "success"}
 
 

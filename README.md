@@ -20,9 +20,15 @@ broker orders.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -r requirements-dev.txt
-python -m pip install -e ".[dev]"
+python -m pip install -r requirements-dev.txt -c constraints.txt
+python -m pip install -e ".[dev]" -c constraints.txt
 copy .env.example .env
+```
+
+On Windows, use the pinned setup script:
+
+```powershell
+.\SETUP_ENV.bat
 ```
 
 Edit `.env` only if you need Alpaca account data:
@@ -122,6 +128,7 @@ The app creates local state and cache files such as:
 - `my_positions.json`
 - `portfolio.json`
 - `signal_log.json`
+- `trade_journal.jsonl`
 - `trust_mode_state.json`
 - `cache_sp500_*`
 

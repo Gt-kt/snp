@@ -9,6 +9,7 @@ cache_sp500_v5/
 data/latest_scan.json
 *.csv
 *.txt
+!constraints.txt
 *.png
 reports/
 *.log
@@ -25,4 +26,5 @@ titan_auto_config.json
 trust_mode_state.json
 risk_log.json
 trade_log.json
+trade_journal.jsonl
 pre_trade_checklist.json

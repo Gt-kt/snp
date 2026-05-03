@@ -28,7 +28,7 @@ from tabulate import tabulate
 from dotenv import load_dotenv
 
 # Load .env variables for APCA_API_KEY_ID and APCA_API_SECRET_KEY
-load_dotenv()
+load_dotenv(override=True, encoding="utf-8-sig")
 
 # Suppress warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)

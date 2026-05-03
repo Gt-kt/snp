@@ -12,6 +12,7 @@ import asyncio
 import os
 import sys
 import tempfile
+from datetime import timezone
 
 from fastapi.testclient import TestClient
 
@@ -32,6 +33,7 @@ async def _noop_scan_loop():
 
 
 td.scanner_loop = _noop_scan_loop  # prevent startup from scanning S&P 500
+td._journal = lambda *args, **kwargs: None
 
 # Module-level shared client: one startup / shutdown pair for the whole file.
 _CLIENT = TestClient(td.app)
@@ -50,6 +52,7 @@ def _fresh_tracker():
     os.unlink(path)
     td.my_positions = MyPositions(path)
     td.state.last_scan = None
+    td.state.last_scan_time = td.datetime.now(timezone.utc).isoformat()
     return path
 
 
@@ -195,6 +198,30 @@ def test_dashboard_health_reports_non_secret_runtime_state(monkeypatch):
             os.unlink(path)
 
 
+def test_position_size_calculates_shares_from_risk():
+    with _mk_client() as c:
+        r = c.get("/api/position-size", params={
+            "entry_price": 100,
+            "stop": 95,
+            "risk_dollars": 500,
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["shares"] == 100
+        assert body["estimated_risk"] == 500
+
+
+def test_position_size_rejects_invalid_stop():
+    with _mk_client() as c:
+        r = c.get("/api/position-size", params={
+            "entry_price": 100,
+            "stop": 105,
+            "risk_dollars": 500,
+        })
+        assert r.status_code == 400
+        assert r.json()["detail"]["kind"] == "SIZE_INPUT_INVALID"
+
+
 def test_run_scan_lock_prevents_overlap(monkeypatch):
     calls = []
 
@@ -258,6 +285,35 @@ def test_add_position_requires_stop_without_force(monkeypatch):
                 "entry_price": 100,
                 "shares": 1,
                 "force": True,
+            })
+            assert r2.status_code == 200
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def test_add_position_blocks_stale_scan_without_force(monkeypatch):
+    path = _fresh_tracker()
+    try:
+        _stub_live_price(monkeypatch, 100.0)
+        td.state.last_scan_time = "2026-01-01T00:00:00+00:00"
+        with _mk_client() as c:
+            r = c.post("/api/my-positions", json={
+                "ticker": "AAPL",
+                "entry_price": 100,
+                "shares": 1,
+                "stop": 95,
+            })
+            assert r.status_code == 400
+            assert r.json()["detail"]["kind"] == "STALE_SCAN"
+
+            r2 = c.post("/api/my-positions", json={
+                "ticker": "AAPL",
+                "entry_price": 100,
+                "shares": 1,
+                "stop": 95,
+                "force": True,
+                "override_reason": "fresh broker fill from manual review",
             })
             assert r2.status_code == 200
     finally:

@@ -1,0 +1,19 @@
+# Known-good dependency set for the local Titan Trade environment.
+#
+# Keep Alpaca on websockets 10.x; alpaca-trade-api 3.2.0 is not compatible
+# with websockets 16.x.
+numpy==2.2.6
+pandas==2.3.3
+pyarrow==21.0.0
+yfinance==1.0
+requests==2.32.4
+tabulate==0.9.0
+python-dotenv==1.1.1
+pytz==2025.2
+alpaca-trade-api==3.2.0
+websockets==10.4
+plyer==2.1.0
+fastapi==0.133.1
+uvicorn==0.35.0
+pydantic==2.11.7
+pytest==9.0.2

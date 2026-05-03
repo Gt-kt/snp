@@ -891,8 +891,10 @@ tbody tr.highlight-new {
 .position-add-row input.w-ticker { width: 72px; text-transform: uppercase; }
 .position-add-row input.w-price { width: 88px; }
 .position-add-row input.w-shares { width: 72px; }
+.position-add-row input.w-risk { width: 92px; }
 .position-add-row input.w-date { width: 130px; }
 .position-add-row input.w-days { width: 56px; }
+.position-add-row input.w-reason { width: 170px; }
 .position-add-row .add-label {
   font-size: 10px;
   font-weight: 600;
@@ -914,6 +916,18 @@ tbody tr.highlight-new {
 }
 .position-add-row .btn-add:hover { filter: brightness(1.1); }
 .position-add-row .btn-add:disabled { opacity: 0.4; cursor: not-allowed; }
+.position-add-row .btn-size {
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--accent-cyan);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+.position-add-row .btn-size:hover { border-color: var(--accent-cyan); }
 .position-add-row .plan-hint {
   font-size: 11px;
   color: var(--accent-cyan);
@@ -1155,11 +1169,14 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
       <span class="add-label">Log a buy:</span>
       <input id="pos-ticker" class="w-ticker" placeholder="TICKER" maxlength="6" autocomplete="off">
       <input id="pos-entry" class="w-price" type="number" step="0.01" min="0" placeholder="Entry $">
+      <input id="pos-stop" class="w-price" type="number" step="0.01" min="0" placeholder="Stop $">
+      <input id="pos-risk" class="w-risk" type="number" step="1" min="1" placeholder="Risk $" title="Risk dollars to size shares">
+      <button class="btn-size" type="button" onclick="sizePosition()">SIZE</button>
       <input id="pos-shares" class="w-shares" type="number" step="1" min="1" placeholder="Shares">
       <input id="pos-date" class="w-date" type="date" title="Entry date">
-      <input id="pos-stop" class="w-price" type="number" step="0.01" min="0" placeholder="Stop $">
       <input id="pos-target" class="w-price" type="number" step="0.01" min="0" placeholder="Target $">
       <input id="pos-timestop" class="w-days" type="number" step="1" min="1" max="60" placeholder="Days" value="5" title="Time-stop in business days (swing default: 5)">
+      <input id="pos-override-reason" class="w-reason" placeholder="Override reason" autocomplete="off">
       <label style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted);font-family:var(--font-mono);font-weight:700;letter-spacing:1px;cursor:pointer">
         <input type="checkbox" id="pos-force" style="margin:0">FORCE
       </label>
@@ -1478,6 +1495,11 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
 
     dashboard.textContent = h.dashboard_auth ? "TOKEN ON" : "LOCAL OPEN";
     dashboard.className = `health-value ${h.dashboard_auth ? "health-ok" : "health-warn"}`;
+
+    const riskInput = $("pos-risk");
+    if (riskInput && !riskInput.value && h.default_risk_dollars) {
+      riskInput.value = Number(h.default_risk_dollars).toFixed(0);
+    }
   }
 
   function renderManualPlan(data) {
@@ -2188,6 +2210,37 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
     _preflightTimer = setTimeout(runPreflight, 400);
   }
 
+  async function sizePosition() {
+    const entry = parseFloat($("pos-entry").value);
+    const stop = parseFloat($("pos-stop").value);
+    const risk = parseFloat($("pos-risk").value);
+    const hint = $("pos-add-hint");
+    if (!entry || !stop || !risk) {
+      hint.className = "error-hint";
+      hint.textContent = "Entry, stop, and risk dollars are required to size.";
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({entry_price: entry, stop, risk_dollars: risk});
+      const r = await apiFetch(`/api/position-size?${qs}`);
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok || body.status !== "success") {
+        const detail = body.detail || {};
+        hint.className = "error-hint";
+        hint.textContent = detail.msg || "Could not calculate size.";
+        return;
+      }
+      $("pos-shares").value = body.shares;
+      hint.className = "plan-hint";
+      hint.textContent = `Sized ${body.shares} shares, estimated risk $${Number(body.estimated_risk || 0).toFixed(2)}.`;
+      schedulePreflight();
+    } catch (e) {
+      hint.className = "error-hint";
+      hint.textContent = "Sizing failed.";
+    }
+  }
+  window.sizePosition = sizePosition;
+
   async function addPosition() {
     const ticker = ($("pos-ticker").value || "").toUpperCase().trim();
     const entry = parseFloat($("pos-entry").value);
@@ -2197,6 +2250,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
     const target = $("pos-target").value ? parseFloat($("pos-target").value) : null;
     const timeStop = parseInt($("pos-timestop").value) || 5;
     const force = $("pos-force") ? $("pos-force").checked : false;
+    const overrideReason = ($("pos-override-reason").value || "").trim() || null;
     const hint = $("pos-add-hint");
 
     if (!ticker || !entry || !shares) {
@@ -2212,6 +2266,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
         body: JSON.stringify({
           ticker, entry_price: entry, shares,
           entry_date: entryDate, stop, target, time_stop_days: timeStop, force,
+          override_reason: overrideReason,
         }),
       });
       if (!r.ok) {
@@ -2239,6 +2294,9 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
             case "NOT_CURRENT_BUY":
               hint.textContent = `${detail.msg}`;
               break;
+            case "STALE_SCAN":
+              hint.textContent = `${detail.msg}`;
+              break;
             default:
               hint.textContent = detail.msg || JSON.stringify(detail);
           }
@@ -2251,6 +2309,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
       $("pos-shares").value = "";
       $("pos-stop").value = "";
       $("pos-target").value = "";
+      $("pos-override-reason").value = "";
       if ($("pos-force")) $("pos-force").checked = false;
       $("pos-preflight").style.display = "none";
       hint.className = "plan-hint";
