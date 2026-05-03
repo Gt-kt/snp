@@ -6,6 +6,7 @@ Portfolio risk management and position sizing.
 
 import os
 import json
+import shutil
 import numpy as np
 from datetime import datetime, timedelta, date
 
@@ -17,6 +18,7 @@ from .config import (
     BASE_SLIPPAGE_DIP_BPS, VOLUME_IMPACT_FACTOR, MAX_DATA_AGE_MINUTES,
     USE_VOLATILITY_PARITY, TARGET_VOLATILITY_PCT
 )
+from .storage import write_json_atomic
 
 
 class PortfolioRiskManager:
@@ -55,21 +57,26 @@ class PortfolioRiskManager:
             "last_week_start": None,
             "open_positions": {},
             "trade_history": [],
+            "state_load_error": None,
         }
         if os.path.exists(self.risk_log_file):
             try:
                 with open(self.risk_log_file, "r") as f:
                     saved = json.load(f)
                     self.state.update(saved)
-            except Exception:
-                pass
+                    self.state["state_load_error"] = None
+            except Exception as exc:
+                self.state["state_load_error"] = str(exc)
+                try:
+                    shutil.copy2(self.risk_log_file, self.risk_log_file + ".corrupt.bak")
+                except Exception:
+                    pass
     
     def _save_state(self):
         try:
-            with open(self.risk_log_file, "w") as f:
-                json.dump(self.state, f, indent=2, default=str)
-        except Exception:
-            pass
+            write_json_atomic(self.risk_log_file, self.state, indent=2)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to save risk state {self.risk_log_file}: {exc}") from exc
     
     def _reset_daily_if_needed(self, reference_equity=None):
         today = date.today().isoformat()
@@ -155,6 +162,9 @@ class PortfolioRiskManager:
     def can_take_new_trade(self, open_positions=None):
         self._reset_daily_if_needed()
         self._reset_weekly_if_needed()
+
+        if self.state.get("state_load_error"):
+            return False, f"RISK STATE LOAD FAILED: {self.state['state_load_error']}"
         
         dd = self.get_current_drawdown_pct()
         if dd >= self.max_drawdown_pct:

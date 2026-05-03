@@ -13,6 +13,7 @@ from titan.market_time import (
     today_et_str,
     last_trading_day_et,
     bdays_between_et,
+    is_nyse_holiday,
     market_session_et,
     market_is_open_et,
 )
@@ -55,6 +56,11 @@ def test_last_trading_day_weekday_is_itself():
     assert last_trading_day_et(wed) == wed
 
 
+def test_last_trading_day_skips_nyse_holiday():
+    christmas = date(2026, 12, 25)
+    assert last_trading_day_et(christmas) == date(2026, 12, 24)
+
+
 def test_bdays_between_basic():
     # Mon 2026-04-13 → Fri 2026-04-17 = 4 business days
     assert bdays_between_et("2026-04-13", "2026-04-17") == 4
@@ -63,6 +69,10 @@ def test_bdays_between_basic():
 def test_bdays_between_skips_weekend():
     # Fri → Mon should be 1 business day
     assert bdays_between_et("2026-04-10", "2026-04-13") == 1
+
+
+def test_bdays_between_skips_nyse_holiday():
+    assert bdays_between_et("2026-12-24", "2026-12-28") == 1
 
 
 def test_bdays_between_zero_on_equal():
@@ -94,6 +104,12 @@ def test_market_session_regular():
     # 2026-04-15 Wednesday 10:00 ET — REGULAR
     reg = datetime(2026, 4, 15, 10, 0, tzinfo=ET)
     assert market_session_et(reg) == "REGULAR"
+
+
+def test_market_session_closed_on_nyse_holiday():
+    christmas = datetime(2026, 12, 25, 10, 0, tzinfo=ET)
+    assert is_nyse_holiday(christmas.date()) is True
+    assert market_session_et(christmas) == "CLOSED"
 
 
 def test_market_session_after_hours():

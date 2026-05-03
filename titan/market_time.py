@@ -29,6 +29,29 @@ _REGULAR_CLOSE = dt_time(16, 0)
 _AFTER_HOURS_CLOSE = dt_time(20, 0)
 
 
+def _nyse_holidays_for_years(start_year: int, end_year: int) -> list[date]:
+    """Return known NYSE holidays for an inclusive year range."""
+    try:
+        from titan.market import _nyse_holidays
+
+        holidays: list[date] = []
+        for year in range(start_year, end_year + 1):
+            holidays.extend(_nyse_holidays(year))
+        return holidays
+    except Exception:
+        return []
+
+
+def _busday_calendar(start_year: int, end_year: int):
+    holidays = _nyse_holidays_for_years(start_year, end_year)
+    return np.busdaycalendar(holidays=holidays) if holidays else None
+
+
+def is_nyse_holiday(day: date) -> bool:
+    """Return True for configured NYSE full-session holidays."""
+    return day in set(_nyse_holidays_for_years(day.year, day.year))
+
+
 def now_et() -> datetime:
     """Current wall-clock time in ET."""
     return datetime.now(ET)
@@ -45,18 +68,21 @@ def today_et_str() -> str:
 
 
 def last_trading_day_et(reference: Optional[date] = None) -> date:
-    """Most recent weekday at or before the reference (ignores holidays).
+    """Most recent NYSE trading day at or before the reference.
 
     If today is Saturday, returns Friday. Sunday → Friday. Monday → Monday.
     """
     ref = reference or today_et()
+    cal = _busday_calendar(ref.year - 1, ref.year + 1)
     # np.busday_offset with '-0' gives the same day if it's a business day,
     # else rolls back to the previous one.
+    if cal is not None:
+        return np.busday_offset(ref, 0, roll="preceding", busdaycal=cal).astype(date)
     return np.busday_offset(ref, 0, roll="preceding").astype(date)
 
 
 def bdays_between_et(start_iso: str, end_iso: Optional[str] = None) -> int:
-    """Business days between two YYYY-MM-DD strings (end defaults to today in ET).
+    """NYSE business days between two YYYY-MM-DD strings.
 
     Returns 0 on parse error or if end <= start.
     """
@@ -69,6 +95,9 @@ def bdays_between_et(start_iso: str, end_iso: Optional[str] = None) -> int:
         )
         if end <= start:
             return 0
+        cal = _busday_calendar(start.year, end.year)
+        if cal is not None:
+            return int(np.busday_count(start, end, busdaycal=cal))
         return int(np.busday_count(start, end))
     except Exception:
         return 0
@@ -77,8 +106,7 @@ def bdays_between_et(start_iso: str, end_iso: Optional[str] = None) -> int:
 def market_session_et(ref: Optional[datetime] = None) -> str:
     """Return CLOSED / PRE_MARKET / REGULAR / AFTER_HOURS for a given ET time.
 
-    Ignores US holidays — a closed holiday returns the time-based classification
-    (e.g. 10 AM on Christmas reports REGULAR). Good enough for dashboard UX.
+    Honors configured NYSE full-session holidays.
     """
     n = ref or now_et()
     if n.tzinfo is None:
@@ -86,7 +114,7 @@ def market_session_et(ref: Optional[datetime] = None) -> str:
     else:
         n = n.astimezone(ET)
 
-    if n.weekday() >= 5:  # Sat/Sun
+    if n.weekday() >= 5 or is_nyse_holiday(n.date()):
         return "CLOSED"
     t = n.time()
     if _PRE_MARKET_OPEN <= t < _REGULAR_OPEN:

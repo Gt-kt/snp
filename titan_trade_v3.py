@@ -74,6 +74,7 @@ from titan.market import SectorAnalyzer
 from titan.opportunity import build_scan_export_data, build_scan_opportunity_summary
 from titan.decision import build_trade_decision
 from titan.swing_score import rank_stalk_orders, top_picks, TOP_PICK_MIN
+from titan.storage import read_json_object, write_json_atomic
 
 
 def setup_logging(level="INFO"):
@@ -84,18 +85,9 @@ def setup_logging(level="INFO"):
     )
     return logging.getLogger("titan")
 
-def load_json_file(path, logger=None):
-    """Load a JSON dict from disk, returning an empty dict on failure."""
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8-sig") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception as exc:
-        if logger:
-            logger.warning(f"Failed to read {path}: {exc}")
-        return {}
+def load_json_file(path, logger=None, strict=False):
+    """Load a JSON dict from disk, returning an empty dict on failure unless strict."""
+    return read_json_object(path, logger=logger, strict=strict)
 
 
 def grade_to_rank(grade):
@@ -399,7 +391,7 @@ def get_actionable_quality_rejection(
 
 def build_runtime_settings(args, auto_manager, logger):
     """Merge file config, auto config, CLI, and hard safety overrides."""
-    file_config = load_json_file("titan_config.json", logger)
+    file_config = load_json_file("titan_config.json", logger, strict=True)
     auto_config = auto_manager.get_config() if auto_manager else {}
 
     settings = {}
@@ -1994,8 +1986,7 @@ def save_managed_portfolio(portfolio, logger=None):
         row['updated_at'] = datetime.now().isoformat()
         out[symbol] = row
     try:
-        with open(PORTFOLIO_FILE, 'w') as f:
-            json.dump(out, f, indent=4)
+        write_json_atomic(PORTFOLIO_FILE, out, indent=4)
     except Exception as exc:
         if logger:
             logger.warning(f"Failed to write {PORTFOLIO_FILE}: {exc}")
@@ -2167,18 +2158,13 @@ def manage_open_positions(executor, data, settings, logger=None):
             if (not entry.get('partial_taken')) and float(entry.get('partial_target', 0.0) or 0.0) > 0 and current_price >= float(entry['partial_target']):
                 qty_to_sell = max(1, shares // 2)
                 if qty_to_sell < shares and executor and executor.is_connected() and MarketHours.is_market_open():
-                    executor.cancel_orders_for_symbol(symbol, side='sell', order_type='stop')
-                    if submit_exit_order(executor, symbol, qty_to_sell, current_price):
-                        entry['partial_taken'] = True
-                        entry['partial_order_pending'] = False
-                        entry['realized_partial_qty'] = int(entry.get('realized_partial_qty', 0) or 0) + qty_to_sell
-                        entry['shares'] = max(shares - qty_to_sell, 0)
-                        if entry.get('entry_price', 0.0) > 0:
-                            entry['stop_loss'] = max(float(entry.get('stop_loss', 0.0) or 0.0), float(entry['entry_price']))
-                        actions.append(f"{symbol}: took partial profit on {qty_to_sell} shares")
-                        shares = entry['shares']
+                    actions.append(
+                        f"{symbol}: partial target hit; auto partial exit skipped until broker fill reconciliation is implemented"
+                    )
                 elif qty_to_sell < shares and not MarketHours.is_market_open():
-                    actions.append(f"{symbol}: partial target hit, waiting for market-open execution")
+                    actions.append(
+                        f"{symbol}: partial target hit; auto partial exit skipped until broker fill reconciliation is implemented"
+                    )
 
             if float(entry.get('target', 0.0) or 0.0) > 0 and current_price >= float(entry['target']) and shares > 0:
                 if executor and executor.is_connected() and MarketHours.is_market_open():
@@ -3418,6 +3404,41 @@ def build_broker_executor(execution_enabled, live_orders=False):
     return AlpacaExecutor(use_paper=not live_orders)
 
 
+def submit_setup_order(executor, setup, qty, is_managed=False):
+    """Route a setup with broker-side entry, target, and stop protection."""
+    if not executor or not executor.is_connected():
+        return False
+    return executor.submit_bracket_order(
+        symbol=setup.ticker,
+        qty=qty,
+        entry_price=setup.trigger,
+        target_price=setup.target,
+        stop_price=setup.stop,
+    )
+
+
+def execution_skip_reason(setup, live_positions, open_order_symbols, portfolio_state):
+    """Return a skip reason for duplicate broker/portfolio exposure."""
+    ticker = setup.ticker
+    if ticker in live_positions:
+        return "already in open positions"
+    if ticker in open_order_symbols:
+        return "already has an open order"
+    if ticker in portfolio_state:
+        return "already managed in portfolio"
+    return None
+
+
+def record_submitted_setup(setup, qty, live_positions, open_order_symbols):
+    """Reflect an accepted protected entry in local in-run exposure guards."""
+    live_positions[setup.ticker] = {
+        'entry_price': setup.trigger,
+        'stop_loss': setup.stop,
+        'shares': qty,
+    }
+    open_order_symbols.add(setup.ticker)
+
+
 def main():
     """Main entry point."""
     import time
@@ -3439,11 +3460,6 @@ def main():
     signal_tracker = SignalTracker()
 
     print_runtime_summary(settings, trust_mode=(args.trust_mode or args.trust_paper))
-    
-    # Check for paper trading bypass from auto config
-    if auto_manager.config.get("paper_trading_bypassed", False):
-        trust_manager.state["paper_validated"] = True
-        trust_manager._save_state()
     
     # Handle Trust Mode commands
     if args.trust_status:
@@ -3611,8 +3627,7 @@ def main():
                 )
             except Exception as exc:
                 logger.warning(f"Could not build final trade decision: {exc}")
-            with open("data/latest_scan.json", "w") as f:
-                json.dump(export, f, indent=2, default=str)
+            write_json_atomic("data/latest_scan.json", export, indent=2)
             print(f"\n  Exported to data/latest_scan.json")
             decision = export.get("trade_decision") or {}
             if decision:
@@ -3674,14 +3689,11 @@ def main():
                                 if len(live_positions) >= int(settings.get('max_live_positions', MAX_POSITIONS)):
                                     print("  [ALPACA] Position cap reached. No more orders will be sent.")
                                     break
-                                if s.ticker in live_positions:
-                                    print(f"  [ALPACA] Skipping {s.ticker}: already in open positions.")
-                                    continue
-                                if s.ticker in open_order_symbols:
-                                    print(f"  [ALPACA] Skipping {s.ticker}: already has an open order.")
-                                    continue
-                                if s.ticker in portfolio_state:
-                                    print(f"  [ALPACA] Skipping {s.ticker}: already managed in portfolio.")
+                                duplicate_reason = execution_skip_reason(
+                                    s, live_positions, open_order_symbols, portfolio_state
+                                )
+                                if duplicate_reason:
+                                    print(f"  [ALPACA] Skipping {s.ticker}: {duplicate_reason}.")
                                     continue
 
                                 current_heat = risk_manager.calculate_portfolio_heat(live_positions)
@@ -3712,39 +3724,19 @@ def main():
 
                                 placed = False
                                 if is_managed:
-                                    placed = executor.submit_limit_order(
-                                        symbol=s.ticker,
-                                        qty=exec_qty,
-                                        side='buy',
-                                        limit_price=s.trigger,
-                                    )
+                                    placed = submit_setup_order(executor, s, exec_qty, is_managed=True)
                                     if placed:
                                         portfolio_state[s.ticker] = create_managed_position_from_setup(s, exec_qty)
                                         save_managed_portfolio(portfolio_state, logger)
-                                        live_positions[s.ticker] = {
-                                            'entry_price': s.trigger,
-                                            'stop_loss': s.stop,
-                                            'shares': exec_qty,
-                                        }
+                                        record_submitted_setup(s, exec_qty, live_positions, open_order_symbols)
                                 else:
-                                    placed = executor.submit_bracket_order(
-                                        symbol=s.ticker,
-                                        qty=exec_qty,
-                                        entry_price=s.trigger,
-                                        target_price=s.target,
-                                        stop_price=s.stop
-                                    )
+                                    placed = submit_setup_order(executor, s, exec_qty, is_managed=False)
                                     if placed:
-                                        live_positions[s.ticker] = {
-                                            'entry_price': s.trigger,
-                                            'stop_loss': s.stop,
-                                            'shares': exec_qty,
-                                        }
+                                        record_submitted_setup(s, exec_qty, live_positions, open_order_symbols)
 
                                 if placed:
                                     trust_manager.record_trade(s.ticker)
                                     buying_power = max(0.0, buying_power - est_cost)
-                                    open_order_symbols.add(s.ticker)
                                     submitted += 1
 
                             if submitted == 0:
@@ -3823,8 +3815,7 @@ def main():
         watchlist = mkt_data.get('watchlist', [])
         stalk_items = [w for w in watchlist if w.get('status') == 'STALK']
         export_data['stalk_orders'] = generate_stalk_orders(stalk_items, settings)
-        with open("data/latest_scan.json", "w") as f:
-            json.dump(export_data, f, indent=4)
+        write_json_atomic("data/latest_scan.json", export_data, indent=4)
         print("    Saved to data/latest_scan.json")
     except Exception as e:
         print(f"    Failed to export JSON: {e}")

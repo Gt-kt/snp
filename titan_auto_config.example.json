@@ -1,0 +1,7 @@
+{
+  "first_run_complete": false,
+  "account_size": 100000.0,
+  "risk_per_trade": 500.0,
+  "notifications_enabled": true,
+  "auto_schedule_enabled": false
+}

@@ -224,7 +224,6 @@ class AutoModeManager:
     def _load_config(self):
         default_config = {
             "first_run_complete": False,
-            "paper_trading_bypassed": False,
             "account_size": ACCOUNT_SIZE,
             "risk_per_trade": RISK_PER_TRADE,
             "notifications_enabled": True,
@@ -279,18 +278,6 @@ class AutoModeManager:
                 self.config["risk_per_trade"] = RISK_PER_TRADE
         except:
             self.config["risk_per_trade"] = RISK_PER_TRADE
-        
-        # Paper trading bypass
-        print("\n  3. Paper trading validation is RECOMMENDED for 30 days.")
-        print("     Type 'SKIP' to bypass, or press ENTER to paper trade first:")
-        skip = input("     > ").strip()
-        
-        if skip.upper() == "SKIP":
-            print("\n     Type 'I ACCEPT THE RISK' to confirm:")
-            confirm = input("     > ").strip()
-            self.config["paper_trading_bypassed"] = (confirm == "I ACCEPT THE RISK")
-        else:
-            self.config["paper_trading_bypassed"] = False
         
         self.config["first_run_complete"] = True
         self.config["created"] = datetime.now().isoformat()

@@ -1211,6 +1211,30 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
   const money = v => `$${Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
   const pct = (v, d=1) => `${Number(v||0).toFixed(d)}%`;
 
+  function dashboardToken() {
+    return localStorage.getItem("titanDashboardToken") || "";
+  }
+
+  function authHeaders(headers) {
+    const out = Object.assign({}, headers || {});
+    const token = dashboardToken();
+    if (token && !out.Authorization) out.Authorization = `Bearer ${token}`;
+    return out;
+  }
+
+  async function apiFetch(url, options = {}, retry = true) {
+    const opts = Object.assign({}, options, {headers: authHeaders(options.headers)});
+    const response = await fetch(url, opts);
+    if (response.status === 401 && retry) {
+      const token = prompt("Dashboard token:");
+      if (token) {
+        localStorage.setItem("titanDashboardToken", token.trim());
+        return apiFetch(url, options, false);
+      }
+    }
+    return response;
+  }
+
   function regimeClass(regime) {
     const s = String(regime||"").toUpperCase();
     if (s.includes("STRONG_BULL")) return "pill-bull";
@@ -1682,7 +1706,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
   // ---- My Positions ----------------------------------------------------
   async function loadMyPositions() {
     try {
-      const r = await fetch("/api/my-positions");
+      const r = await apiFetch("/api/my-positions");
       if (!r.ok) return;
       const body = await r.json();
       renderMyPositions(body.positions || [], body.summary || {});
@@ -1852,7 +1876,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
         ticker, entry_price: entry, shares,
         ...(stop != null ? { stop } : {}),
       });
-      const r = await fetch(`/api/my-positions/validate?${qs}`);
+      const r = await apiFetch(`/api/my-positions/validate?${qs}`);
       if (!r.ok) { panel.style.display = "none"; return; }
       const body = await r.json();
       if (body.status !== "success") { panel.style.display = "none"; return; }
@@ -1927,7 +1951,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
     }
 
     try {
-      const r = await fetch("/api/my-positions", {
+      const r = await apiFetch("/api/my-positions", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
@@ -1992,7 +2016,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
       alert("Invalid exit price.");
       return;
     }
-    const r = await fetch(`/api/my-positions/${id}/close`, {
+    const r = await apiFetch(`/api/my-positions/${id}/close`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({exit_price: exit, reason: "MANUAL"}),
@@ -2006,7 +2030,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
 
   async function deletePosition(id) {
     if (!confirm("Delete this position from the tracker? (Doesn't touch real brokerage.)")) return;
-    const r = await fetch(`/api/my-positions/${id}`, {method: "DELETE"});
+    const r = await apiFetch(`/api/my-positions/${id}`, {method: "DELETE"});
     if (!r.ok) {
       alert("Failed to delete.");
       return;
@@ -2023,7 +2047,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
       return;
     }
     try {
-      const r = await fetch(`/api/my-positions/plan/${encodeURIComponent(ticker)}`);
+      const r = await apiFetch(`/api/my-positions/plan/${encodeURIComponent(ticker)}`);
       const body = await r.json();
       if (body.status !== "success") {
         hint.className = "plan-hint";

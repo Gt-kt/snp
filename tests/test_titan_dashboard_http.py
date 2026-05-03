@@ -7,6 +7,7 @@ All tests use a fresh tempfile-backed MyPositions tracker and stub the
 yfinance live-price fetch so they run offline and deterministic.
 """
 
+import argparse
 import asyncio
 import os
 import sys
@@ -99,6 +100,60 @@ def _mk_client():
 # /api/my-positions/validate — preflight check
 # ================================================================
 
+def test_dashboard_mutations_require_token_when_configured(monkeypatch):
+    path = _fresh_tracker()
+    try:
+        _stub_live_price(monkeypatch, 100.0)
+        monkeypatch.setattr(td, "DASHBOARD_API_TOKEN", "secret-token")
+        with _mk_client() as c:
+            r = c.post("/api/my-positions", json={
+                "ticker": "AAPL",
+                "entry_price": 100,
+                "shares": 1,
+                "stop": 95,
+                "force": True,
+            })
+            assert r.status_code == 401
+            r2 = c.post(
+                "/api/my-positions",
+                headers={"Authorization": "Bearer secret-token"},
+                json={
+                    "ticker": "AAPL",
+                    "entry_price": 100,
+                    "shares": 1,
+                    "stop": 95,
+                    "force": True,
+                },
+            )
+            assert r2.status_code == 200
+    finally:
+        monkeypatch.setattr(td, "DASHBOARD_API_TOKEN", "")
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def test_dashboard_rejects_bind_all_without_auth(monkeypatch):
+    monkeypatch.setattr(td, "DASHBOARD_API_TOKEN", "")
+    parser = argparse.ArgumentParser()
+    args = argparse.Namespace(host="0.0.0.0", allow_unsafe_no_auth=False)
+
+    try:
+        td.validate_dashboard_args(parser, args)
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("Expected parser.error for unauthenticated bind-all")
+
+
+def test_dashboard_allows_bind_all_with_token(monkeypatch):
+    monkeypatch.setattr(td, "DASHBOARD_API_TOKEN", "secret-token")
+    parser = argparse.ArgumentParser()
+    args = argparse.Namespace(host="0.0.0.0", allow_unsafe_no_auth=False)
+
+    td.validate_dashboard_args(parser, args)
+    monkeypatch.setattr(td, "DASHBOARD_API_TOKEN", "")
+
+
 def test_validate_ok_small_position(monkeypatch):
     path = _fresh_tracker()
     try:
@@ -112,6 +167,49 @@ def test_validate_ok_small_position(monkeypatch):
             assert body["risk"]["level"] == "OK"
             assert body["sanity"]["ok"] is True
             assert body["live_price"] == 100.0
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def test_add_position_requires_stop_without_force(monkeypatch):
+    path = _fresh_tracker()
+    try:
+        _stub_live_price(monkeypatch, 100.0)
+        with _mk_client() as c:
+            r = c.post("/api/my-positions", json={
+                "ticker": "AAPL",
+                "entry_price": 100,
+                "shares": 1,
+            })
+            assert r.status_code == 400
+            assert r.json()["detail"]["kind"] == "PLAN_INVALID"
+            r2 = c.post("/api/my-positions", json={
+                "ticker": "AAPL",
+                "entry_price": 100,
+                "shares": 1,
+                "force": True,
+            })
+            assert r2.status_code == 200
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def test_add_position_rejects_long_time_stop_without_force(monkeypatch):
+    path = _fresh_tracker()
+    try:
+        _stub_live_price(monkeypatch, 100.0)
+        with _mk_client() as c:
+            r = c.post("/api/my-positions", json={
+                "ticker": "AAPL",
+                "entry_price": 100,
+                "shares": 1,
+                "stop": 95,
+                "time_stop_days": 15,
+            })
+            assert r.status_code == 400
+            assert r.json()["detail"]["kind"] == "TIME_STOP_OUT_OF_RANGE"
     finally:
         if os.path.exists(path):
             os.unlink(path)

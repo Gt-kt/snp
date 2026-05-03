@@ -19,12 +19,14 @@ import os
 import sys
 import tempfile
 import time
+import hmac
 import traceback
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -75,9 +77,32 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger("titan-dashboard")
+DASHBOARD_API_TOKEN = os.environ.get("TITAN_DASHBOARD_API_TOKEN", "").strip()
 
 if _earnings_import_error:
     logger.warning(f"EarningsCalendar unavailable: {_earnings_import_error}")
+
+
+def require_dashboard_auth(request: Request) -> None:
+    """Require a bearer token for mutating routes when configured."""
+    if not DASHBOARD_API_TOKEN:
+        return
+    auth = request.headers.get("authorization", "")
+    supplied = request.headers.get("x-titan-token", "")
+    if auth.lower().startswith("bearer "):
+        supplied = auth[7:].strip()
+    if not hmac.compare_digest(supplied, DASHBOARD_API_TOKEN):
+        raise HTTPException(status_code=401, detail="Dashboard API token required")
+
+
+def validate_dashboard_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Reject network exposure unless mutating routes have token protection."""
+    bind_all = args.host in {"0.0.0.0", "::"}
+    if bind_all and not DASHBOARD_API_TOKEN and not getattr(args, "allow_unsafe_no_auth", False):
+        parser.error(
+            "--host 0.0.0.0 requires TITAN_DASHBOARD_API_TOKEN "
+            "or --allow-unsafe-no-auth"
+        )
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -89,7 +114,13 @@ SCAN_FILE = APP_DIR / "data" / "latest_scan.json"
 # ---------------------------------------------------------------------------
 # App state
 # ---------------------------------------------------------------------------
-app = FastAPI(title="Titan Trade Live Dashboard")
+@asynccontextmanager
+async def lifespan(app_instance: FastAPI):
+    await on_startup()
+    yield
+
+
+app = FastAPI(title="Titan Trade Live Dashboard", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -103,6 +134,7 @@ class DashboardState:
         self.is_scanning: bool = False
         self.scan_error: Optional[str] = None
         self.scan_interval_min: int = 15
+        self.auto_scan_enabled: bool = False
         self.next_scan_time: Optional[str] = None
         self.scan_history: List[dict] = []      # last N scan summaries
         self.connected_clients: List[WebSocket] = []
@@ -118,6 +150,7 @@ class DashboardState:
             "scan_count": self.scan_count,
             "scan_error": self.scan_error,
             "scan_interval_min": self.scan_interval_min,
+            "auto_scan_enabled": self.auto_scan_enabled,
             "connected_clients": len(self.connected_clients),
         }
 
@@ -698,6 +731,9 @@ async def run_scan():
 
 
 def _update_next_scan_time():
+    if not state.auto_scan_enabled:
+        state.next_scan_time = None
+        return
     now = datetime.now(timezone.utc)
     delta = state.scan_interval_min * 60
     state.next_scan_time = datetime.fromtimestamp(
@@ -721,12 +757,17 @@ async def scanner_loop():
 # ---------------------------------------------------------------------------
 # Startup / shutdown
 # ---------------------------------------------------------------------------
-@app.on_event("startup")
 async def on_startup():
     # Pick up interval from env (set by main() before uvicorn.run)
     env_interval = os.environ.get("TITAN_SCAN_INTERVAL_MIN")
     if env_interval:
         state.scan_interval_min = max(1, int(env_interval))
+    state.auto_scan_enabled = os.environ.get("TITAN_DASHBOARD_AUTO_SCAN", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     state.settings = {}
     _update_next_scan_time()
@@ -742,8 +783,11 @@ async def on_startup():
         except Exception:
             pass
 
-    asyncio.create_task(scanner_loop())
-    logger.info(f"Dashboard started – scanning every {state.scan_interval_min} min")
+    if state.auto_scan_enabled:
+        asyncio.create_task(scanner_loop())
+        logger.info(f"Dashboard started - scanning every {state.scan_interval_min} min")
+    else:
+        logger.info("Dashboard started - auto scan disabled")
 
 
 # ---------------------------------------------------------------------------
@@ -812,7 +856,7 @@ async def get_scan_results():
 
 
 @app.post("/api/scan-now")
-async def trigger_scan():
+async def trigger_scan(_auth: None = Depends(require_dashboard_auth)):
     if state.is_scanning:
         return {"status": "busy", "message": "Scan already running"}
     asyncio.create_task(run_scan())
@@ -877,6 +921,30 @@ class ClosePositionRequest(BaseModel):
     exit_price: float
     exit_date: Optional[str] = None
     reason: Optional[str] = "MANUAL"
+
+
+def _validate_manual_swing_plan(req: AddPositionRequest) -> None:
+    """Require a concrete 3-7 trading-day exit plan unless explicitly forced."""
+    if req.force:
+        return
+    stop = float(req.stop or 0.0)
+    if stop <= 0 or stop >= float(req.entry_price or 0.0):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "kind": "PLAN_INVALID",
+                "msg": "Manual swing entries require a stop below entry. Use force=true only for an intentional override.",
+            },
+        )
+    days = int(req.time_stop_days or DEFAULT_TIME_STOP_DAYS)
+    if days < 1 or days > 7:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "kind": "TIME_STOP_OUT_OF_RANGE",
+                "msg": "Manual swing time stop must be 1-7 trading days. Use force=true only for an intentional override.",
+            },
+        )
 
 
 def _enrich_positions(positions: List[dict]) -> List[dict]:
@@ -959,8 +1027,9 @@ async def lookup_plan(ticker: str):
 
 
 @app.post("/api/my-positions")
-async def add_my_position(req: AddPositionRequest):
+async def add_my_position(req: AddPositionRequest, _auth: None = Depends(require_dashboard_auth)):
     ticker = (req.ticker or "").upper().strip()
+    _validate_manual_swing_plan(req)
 
     # -------- Gate 1: Hard risk cap -----------------------------------
     risk = validate_position_risk(req.entry_price, req.stop, req.shares)
@@ -1066,7 +1135,11 @@ async def add_my_position(req: AddPositionRequest):
 
 
 @app.patch("/api/my-positions/{position_id}")
-async def update_my_position(position_id: str, req: UpdatePositionRequest):
+async def update_my_position(
+    position_id: str,
+    req: UpdatePositionRequest,
+    _auth: None = Depends(require_dashboard_auth),
+):
     updated = my_positions.update(
         position_id,
         **{k: v for k, v in req.model_dump().items() if v is not None},
@@ -1078,7 +1151,11 @@ async def update_my_position(position_id: str, req: UpdatePositionRequest):
 
 
 @app.post("/api/my-positions/{position_id}/close")
-async def close_my_position(position_id: str, req: ClosePositionRequest):
+async def close_my_position(
+    position_id: str,
+    req: ClosePositionRequest,
+    _auth: None = Depends(require_dashboard_auth),
+):
     try:
         closed = my_positions.close(
             position_id,
@@ -1095,7 +1172,7 @@ async def close_my_position(position_id: str, req: ClosePositionRequest):
 
 
 @app.delete("/api/my-positions/{position_id}")
-async def delete_my_position(position_id: str):
+async def delete_my_position(position_id: str, _auth: None = Depends(require_dashboard_auth)):
     ok = my_positions.delete(position_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Position not found")
@@ -1111,16 +1188,29 @@ def main():
     parser.add_argument("--port", type=int, default=8000, help="Server port (default 8000)")
     parser.add_argument("--interval", type=int, default=15, help="Scan interval in minutes (default 15)")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address")
+    parser.add_argument(
+        "--auto-scan",
+        action="store_true",
+        help="Run scans on startup and every interval; default is dashboard-only manual tracking",
+    )
+    parser.add_argument(
+        "--allow-unsafe-no-auth",
+        action="store_true",
+        help="Allow binding to all interfaces without TITAN_DASHBOARD_API_TOKEN",
+    )
     args = parser.parse_args()
+    validate_dashboard_args(parser, args)
 
     interval = max(1, args.interval)
     os.environ["TITAN_SCAN_INTERVAL_MIN"] = str(interval)
+    os.environ["TITAN_DASHBOARD_AUTO_SCAN"] = "true" if args.auto_scan else "false"
 
     import uvicorn
     print(f"\n{'='*60}")
     print(f"  TITAN PRO SCANNER — LIVE DASHBOARD")
     print(f"  http://{args.host}:{args.port}")
     print(f"  Scan interval: {interval} minutes")
+    print(f"  Auto scan: {'ON' if args.auto_scan else 'OFF'}")
     print(f"  Mode: Multi-Signal Detection (KOSPI architecture)")
     print(f"{'='*60}\n")
 
