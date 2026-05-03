@@ -53,6 +53,7 @@ from titan.decision import build_trade_decision
 from titan.event_risk import assess_event_risk
 from titan.config import ACCOUNT_SIZE, MAX_DAILY_LOSS_PCT, RISK_PER_TRADE
 from titan.journal import append_journal_event
+from titan.performance import build_performance_report
 from titan.storage import write_json_atomic
 
 # Earnings checker — wrap yfinance behind a safe shim (the dashboard degrades
@@ -1111,6 +1112,14 @@ async def list_my_positions():
         "daily_loss_cap_hit": daily_pnl_pct <= -MAX_DAILY_LOSS_PCT,
         "account_size": ACCOUNT_SIZE,
     }
+
+
+@app.get("/api/performance")
+async def get_performance():
+    try:
+        return build_performance_report(my_positions.list_all())
+    except RuntimeError as exc:
+        raise _positions_unavailable(exc)
 
 
 @app.get("/api/my-positions/validate")

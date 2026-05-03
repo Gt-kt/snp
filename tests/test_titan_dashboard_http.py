@@ -651,6 +651,33 @@ def test_list_positions_includes_daily_loss_fields(monkeypatch):
             os.unlink(path)
 
 
+def test_performance_endpoint_reports_closed_trade_stats(monkeypatch):
+    path = _fresh_tracker()
+    try:
+        _stub_live_price(monkeypatch, 100.0)
+        pos = td.my_positions.add(
+            "AAPL",
+            entry_price=100.0,
+            shares=10,
+            stop=95.0,
+            target=110.0,
+            signal_type="BREAKOUT",
+            sector="TECH",
+        )
+        td.my_positions.close(pos["id"], exit_price=110.0, reason="TARGET")
+
+        with _mk_client() as c:
+            r = c.get("/api/performance")
+            assert r.status_code == 200
+            body = r.json()
+            assert body["overall"]["trades"] == 1
+            assert body["overall"]["net_pnl_dollars"] == 100.0
+            assert body["by_signal_type"][0]["name"] == "BREAKOUT"
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
 def test_enriched_positions_have_trailing_and_effective_stop(monkeypatch):
     path = _fresh_tracker()
     try:

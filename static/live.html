@@ -371,6 +371,58 @@ body {
   flex: 0 0 auto;
 }
 
+.perf-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(110px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.perf-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.perf-card .label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 700;
+}
+.perf-card .value {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 800;
+}
+.perf-warning {
+  color: var(--accent-amber);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.perf-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.perf-tab {
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.perf-tab.active {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+  background: rgba(34, 211, 238, 0.08);
+}
+
 /* --- TABLE ------------------------------------------------------------- */
 .table-wrap {
   overflow-x: auto;
@@ -1030,6 +1082,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
   .stats-row { padding: 12px; }
   .health-row { grid-template-columns: 1fr 1fr; padding: 0 12px 12px; }
   .manual-plan { grid-template-columns: 1fr; }
+  .perf-grid { grid-template-columns: 1fr 1fr; }
   .section { padding: 16px 12px; }
   .stat-card { min-width: 100px; padding: 8px 12px; }
   .stat-card .value { font-size: 16px; }
@@ -1153,6 +1206,46 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
       <div class="manual-check">Enter actual fill, shares, stop, target, and 3-5 day time stop after buying.</div>
       <div class="manual-check">Sell manually on stop, target, trailing stop, or time stop.</div>
     </div>
+  </div>
+</div>
+
+<div class="section" id="section-performance">
+  <div class="section-header">
+    <span class="section-title">Performance Review</span>
+    <span class="section-badge" id="performance-count-badge">0</span>
+  </div>
+  <div id="performance-warning" class="perf-warning"></div>
+  <div class="perf-grid">
+    <div class="perf-card"><div class="label">Net P&amp;L</div><div class="value" id="perf-net">--</div></div>
+    <div class="perf-card"><div class="label">Win Rate</div><div class="value" id="perf-winrate">--</div></div>
+    <div class="perf-card"><div class="label">Expectancy</div><div class="value" id="perf-expectancy">--</div></div>
+    <div class="perf-card"><div class="label">Profit Factor</div><div class="value" id="perf-pf">--</div></div>
+    <div class="perf-card"><div class="label">Avg Return</div><div class="value" id="perf-avg-return">--</div></div>
+    <div class="perf-card"><div class="label">Avg Hold</div><div class="value" id="perf-hold">--</div></div>
+  </div>
+  <div class="perf-tabs">
+    <button class="perf-tab active" id="perf-tab-signal" onclick="renderPerformanceTable('signal')">SIGNAL</button>
+    <button class="perf-tab" id="perf-tab-sector" onclick="renderPerformanceTable('sector')">SECTOR</button>
+    <button class="perf-tab" id="perf-tab-exit" onclick="renderPerformanceTable('exit')">EXIT</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Group</th>
+          <th>Trades</th>
+          <th>Win</th>
+          <th>Net P&amp;L</th>
+          <th>Expectancy</th>
+          <th>PF</th>
+          <th>Avg Return</th>
+          <th>Avg Hold</th>
+        </tr>
+      </thead>
+      <tbody id="performance-body">
+        <tr><td colspan="8" class="empty-state"><p>No closed trades yet.</p></td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -2133,6 +2226,85 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
     window.__prevSellAlertCount = sellCount;
   }
 
+  let performanceData = null;
+  let performanceMode = "signal";
+
+  async function loadPerformance() {
+    try {
+      const r = await apiFetch("/api/performance");
+      if (!r.ok) return;
+      performanceData = await r.json();
+      renderPerformanceSummary(performanceData);
+      renderPerformanceTable(performanceMode);
+    } catch (e) {
+      console.error("loadPerformance failed:", e);
+    }
+  }
+
+  function perfMoney(v) {
+    const n = Number(v || 0);
+    return `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
+  }
+
+  function perfClass(v) {
+    const n = Number(v || 0);
+    if (n > 0) return "text-green";
+    if (n < 0) return "text-red";
+    return "text-muted";
+  }
+
+  function renderPerformanceSummary(report) {
+    const overall = report.overall || {};
+    $("performance-count-badge").textContent = overall.trades || 0;
+    $("perf-net").textContent = perfMoney(overall.net_pnl_dollars);
+    $("perf-net").className = `value ${perfClass(overall.net_pnl_dollars)}`;
+    $("perf-winrate").textContent = `${Number(overall.win_rate || 0).toFixed(1)}%`;
+    $("perf-expectancy").textContent = perfMoney(overall.expectancy_dollars);
+    $("perf-expectancy").className = `value ${perfClass(overall.expectancy_dollars)}`;
+    $("perf-pf").textContent = overall.profit_factor == null ? "--" : Number(overall.profit_factor).toFixed(2);
+    $("perf-avg-return").textContent = `${Number(overall.avg_return_pct || 0).toFixed(2)}%`;
+    $("perf-hold").textContent = overall.avg_hold_days == null ? "--" : `${Number(overall.avg_hold_days).toFixed(1)}D`;
+
+    const warning = $("performance-warning");
+    if (report.sample_warning) {
+      warning.textContent = `Sample size is small: ${overall.trades || 0}/${report.min_review_trades} closed trades. Do not trust strategy rankings yet.`;
+    } else {
+      warning.textContent = "";
+    }
+  }
+
+  function renderPerformanceTable(mode = "signal") {
+    performanceMode = mode;
+    ["signal", "sector", "exit"].forEach(k => {
+      const tab = $(`perf-tab-${k}`);
+      if (tab) tab.classList.toggle("active", k === mode);
+    });
+    const tbody = $("performance-body");
+    if (!tbody || !performanceData) return;
+    const rows = mode === "sector"
+      ? performanceData.by_sector || []
+      : mode === "exit"
+        ? performanceData.by_exit_reason || []
+        : performanceData.by_signal_type || [];
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><p>No closed trades yet.</p></td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(row => `
+      <tr>
+        <td class="ticker-cell">${escapeHtml(row.name || "UNKNOWN")}</td>
+        <td class="mono">${row.trades || 0}</td>
+        <td class="mono">${Number(row.win_rate || 0).toFixed(1)}%</td>
+        <td class="mono ${perfClass(row.net_pnl_dollars)}">${perfMoney(row.net_pnl_dollars)}</td>
+        <td class="mono ${perfClass(row.expectancy_dollars)}">${perfMoney(row.expectancy_dollars)}</td>
+        <td class="mono">${row.profit_factor == null ? "--" : Number(row.profit_factor).toFixed(2)}</td>
+        <td class="mono">${Number(row.avg_return_pct || 0).toFixed(2)}%</td>
+        <td class="mono">${row.avg_hold_days == null ? "--" : Number(row.avg_hold_days).toFixed(1) + "D"}</td>
+      </tr>
+    `).join("");
+  }
+  window.renderPerformanceTable = renderPerformanceTable;
+
   // --- Preflight validator: fires as user types --------------------
   let _preflightTimer = null;
   async function runPreflight() {
@@ -2316,6 +2488,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
       hint.textContent = "Added.";
       setTimeout(() => { hint.textContent = ""; }, 2000);
       await loadMyPositions();
+      await loadPerformance();
     } catch (e) {
       hint.className = "error-hint";
       hint.textContent = "Network error.";
@@ -2340,6 +2513,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
       return;
     }
     await loadMyPositions();
+    await loadPerformance();
   }
 
   async function deletePosition(id) {
@@ -2350,6 +2524,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
       return;
     }
     await loadMyPositions();
+    await loadPerformance();
   }
 
   // Auto-fill stop/target from the latest scan when user types a ticker
@@ -2427,6 +2602,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
 
         if (msg.type === "my_positions_changed") {
           loadMyPositions();
+          loadPerformance();
         }
 
         if (msg.type === "scan_error") {
@@ -2483,8 +2659,10 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
   })();
 
   loadMyPositions();
+  loadPerformance();
   loadHealth();
   setInterval(loadMyPositions, 60000);  // refresh alerts every minute between scans
+  setInterval(loadPerformance, 60000);
   setInterval(loadHealth, 60000);
 
   // Update "time ago" labels every 30s
