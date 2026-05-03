@@ -154,3 +154,140 @@ def test_manage_open_positions_does_not_assume_partial_fill(monkeypatch):
     assert updated["AAPL"]["partial_taken"] is False
     assert updated["AAPL"]["shares"] == 10
     assert any("auto partial exit skipped" in action for action in actions)
+
+
+def test_manage_open_positions_preserves_stop_when_target_hit(monkeypatch):
+    portfolio = {
+        "AAPL": {
+            "ticker": "AAPL",
+            "status": "OPEN",
+            "entry_price": 100.0,
+            "shares": 10,
+            "stop_loss": 95.0,
+            "target": 105.0,
+        }
+    }
+
+    class DummyExecutor:
+        def __init__(self):
+            self.cancelled = []
+            self.market_orders = []
+
+        def is_connected(self):
+            return True
+
+        def get_open_positions_snapshot(self):
+            return {"AAPL": {"shares": 10, "entry_price": 100.0}}
+
+        def get_open_orders(self, *args, **kwargs):
+            if kwargs.get("symbol") == "AAPL" and kwargs.get("side") == "sell":
+                return [{"symbol": "AAPL", "side": "sell", "type": "stop", "qty": 10, "stop_price": 95.0}]
+            return []
+
+        def cancel_orders_for_symbol(self, *args, **kwargs):
+            self.cancelled.append((args, kwargs))
+
+        def submit_market_order(self, *args, **kwargs):
+            self.market_orders.append((args, kwargs))
+            return True
+
+        def submit_stop_order(self, *args, **kwargs):
+            return True
+
+    class DummyMarketRegime:
+        def __init__(self, data):
+            pass
+
+        def analyze_spy(self):
+            return "BULL", 1.0, None
+
+    executor = DummyExecutor()
+    monkeypatch.setattr(mod, "load_managed_portfolio", lambda logger=None: portfolio.copy())
+    monkeypatch.setattr(mod, "save_managed_portfolio", lambda p, logger=None: None)
+    monkeypatch.setattr(mod, "build_price_lookup", lambda data, symbols: {"AAPL": 106.0})
+    monkeypatch.setattr(mod, "MarketRegime", DummyMarketRegime)
+    monkeypatch.setattr(mod.MarketHours, "is_market_open", staticmethod(lambda: True))
+
+    data = pd.DataFrame({"Close": [100.0]})
+    _, actions = mod.manage_open_positions(executor, data, {}, logger=None)
+
+    assert executor.cancelled == []
+    assert executor.market_orders == []
+    assert any("auto exit skipped" in action for action in actions)
+
+
+def test_manage_open_positions_skips_unprotected_add_on(monkeypatch):
+    portfolio = {
+        "AAPL": {
+            "ticker": "AAPL",
+            "status": "OPEN",
+            "entry_price": 100.0,
+            "shares": 10,
+            "starter_qty": 10,
+            "planned_total_qty": 15,
+            "add_on_qty": 5,
+            "add_on_trigger": 104.0,
+            "add_on_filled": False,
+            "stop_loss": 95.0,
+            "target": 120.0,
+        }
+    }
+
+    class DummyExecutor:
+        def __init__(self):
+            self.limit_orders = []
+
+        def is_connected(self):
+            return True
+
+        def get_open_positions_snapshot(self):
+            return {"AAPL": {"shares": 10, "entry_price": 100.0}}
+
+        def get_open_orders(self, *args, **kwargs):
+            if kwargs.get("symbol") == "AAPL" and kwargs.get("side") == "sell":
+                return [{"symbol": "AAPL", "side": "sell", "type": "stop", "qty": 10, "stop_price": 95.0}]
+            return []
+
+        def submit_limit_order(self, *args, **kwargs):
+            self.limit_orders.append((args, kwargs))
+            return True
+
+        def cancel_orders_for_symbol(self, *args, **kwargs):
+            return 0
+
+        def submit_stop_order(self, *args, **kwargs):
+            return True
+
+    class DummyMarketRegime:
+        def __init__(self, data):
+            pass
+
+        def analyze_spy(self):
+            return "BULL", 1.0, None
+
+    executor = DummyExecutor()
+    monkeypatch.setattr(mod, "load_managed_portfolio", lambda logger=None: portfolio.copy())
+    monkeypatch.setattr(mod, "save_managed_portfolio", lambda p, logger=None: None)
+    monkeypatch.setattr(mod, "build_price_lookup", lambda data, symbols: {"AAPL": 105.0})
+    monkeypatch.setattr(mod, "MarketRegime", DummyMarketRegime)
+    monkeypatch.setattr(mod.MarketHours, "is_market_open", staticmethod(lambda: True))
+
+    data = pd.DataFrame({"Close": [100.0]})
+    _, actions = mod.manage_open_positions(executor, data, {}, logger=None)
+
+    assert executor.limit_orders == []
+    assert any("auto add-on skipped" in action for action in actions)
+
+
+def test_get_market_data_refuses_fake_small_universe_on_sp500_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(mod, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(mod, "SP500_CACHE_FILE", str(tmp_path / "sp500_tickers.json"))
+    monkeypatch.setattr(mod, "OHLCV_CACHE_FILE", str(tmp_path / "sp500_ohlcv_bulk.parquet"))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(mod.requests, "get", boom)
+
+    with pytest.raises(RuntimeError, match="Refusing to run an incomplete"):
+        mod.get_market_data(tickers_override=None, cache_ttl_hours=24, sp500_ttl_days=1)

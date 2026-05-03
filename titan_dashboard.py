@@ -17,12 +17,12 @@ import json
 import logging
 import os
 import sys
-import tempfile
 import time
 import hmac
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from importlib import resources
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -52,6 +52,7 @@ from titan.swing_score import rank_stalk_orders, top_picks, TOP_PICK_MIN
 from titan.decision import build_trade_decision
 from titan.event_risk import assess_event_risk
 from titan.config import ACCOUNT_SIZE, MAX_DAILY_LOSS_PCT
+from titan.storage import write_json_atomic
 
 # Earnings checker — wrap yfinance behind a safe shim (the dashboard degrades
 # gracefully if the calendar module is unavailable).
@@ -108,8 +109,12 @@ def validate_dashboard_args(parser: argparse.ArgumentParser, args: argparse.Name
 # Paths
 # ---------------------------------------------------------------------------
 APP_DIR = Path(__file__).resolve().parent
-STATIC_DIR = APP_DIR / "static"
-SCAN_FILE = APP_DIR / "data" / "latest_scan.json"
+try:
+    STATIC_DIR = Path(resources.files("static"))
+except ModuleNotFoundError:
+    STATIC_DIR = APP_DIR / "static"
+DATA_DIR = Path(os.environ.get("TITAN_DATA_DIR", "data")).resolve()
+SCAN_FILE = DATA_DIR / "latest_scan.json"
 
 # ---------------------------------------------------------------------------
 # App state
@@ -156,6 +161,7 @@ class DashboardState:
 
 
 state = DashboardState()
+_scan_lock = asyncio.Lock()
 
 # ---------------------------------------------------------------------------
 # Manual position tracker — user trades manually, this tracks what they hold
@@ -463,19 +469,7 @@ def _run_scan_sync(settings: dict) -> dict:
     except Exception as exc:
         logger.error(f"Position-aware augmentation failed: {exc}\n{traceback.format_exc()}")
 
-    # Persist to disk (atomic write)
-    os.makedirs("data", exist_ok=True)
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(APP_DIR / "data"), suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, "w") as f:
-            json.dump(export, f, indent=2, default=str)
-        os.replace(tmp_path, SCAN_FILE)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    write_json_atomic(SCAN_FILE, export, indent=2)
     return export
 
 
@@ -675,59 +669,65 @@ def _augment_with_position_awareness(export: dict) -> None:
 
 async def run_scan():
     """Async wrapper – runs the blocking scan in a thread pool."""
-    state.is_scanning = True
-    state.scan_error = None
-    await broadcast(state.snapshot())
+    if _scan_lock.locked():
+        return False
 
-    try:
-        loop = asyncio.get_event_loop()
-        settings = state.settings or {}
-        result = await loop.run_in_executor(None, _run_scan_sync, settings)
-
-        state.last_scan = result
-        state.last_scan_time = result.get("timestamp", datetime.now(timezone.utc).isoformat())
-        state.scan_count += 1
-
-        # Keep last 50 scan summaries
-        n_validated = len(result.get("validated", []))
-        n_active = len(result.get("active", []))
-        n_opportunity = len(result.get("opportunity", []))
-        n_watchlist = len(result.get("watchlist", []))
-        state.scan_history.append({
-            "time": state.last_scan_time,
-            "validated": n_validated,
-            "active": n_active,
-            "opportunity": n_opportunity,
-            "watchlist": n_watchlist,
-            "regime": result.get("regime", "UNKNOWN"),
-            "vix": result.get("vix"),
-        })
-        if len(state.scan_history) > 50:
-            state.scan_history = state.scan_history[-50:]
-
-        logger.info(
-            f"Scan #{state.scan_count} complete: "
-            f"{n_validated} validated, {n_active} active, "
-            f"{n_opportunity} opportunity, {n_watchlist} watchlist"
-        )
-
-        # Push full results to all clients
-        await broadcast({"type": "scan_result", "data": result})
-
-        # Fresh prices landed — refresh My Positions alerts on the UI
-        # (invalidate the price cache so the next /api/my-positions call is fresh)
-        _price_cache_clear()
-        await broadcast({"type": "my_positions_changed", "reason": "scan"})
-
-    except Exception as exc:
-        state.scan_error = str(exc)
-        logger.error(f"Scan failed: {exc}\n{traceback.format_exc()}")
-        await broadcast({"type": "scan_error", "error": str(exc)})
-
-    finally:
-        state.is_scanning = False
-        _update_next_scan_time()
+    async with _scan_lock:
+        state.is_scanning = True
+        state.scan_error = None
         await broadcast(state.snapshot())
+
+        try:
+            loop = asyncio.get_event_loop()
+            settings = state.settings or {}
+            result = await loop.run_in_executor(None, _run_scan_sync, settings)
+
+            state.last_scan = result
+            state.last_scan_time = result.get("timestamp", datetime.now(timezone.utc).isoformat())
+            state.scan_count += 1
+
+            # Keep last 50 scan summaries
+            n_validated = len(result.get("validated", []))
+            n_active = len(result.get("active", []))
+            n_opportunity = len(result.get("opportunity", []))
+            n_watchlist = len(result.get("watchlist", []))
+            state.scan_history.append({
+                "time": state.last_scan_time,
+                "validated": n_validated,
+                "active": n_active,
+                "opportunity": n_opportunity,
+                "watchlist": n_watchlist,
+                "regime": result.get("regime", "UNKNOWN"),
+                "vix": result.get("vix"),
+            })
+            if len(state.scan_history) > 50:
+                state.scan_history = state.scan_history[-50:]
+
+            logger.info(
+                f"Scan #{state.scan_count} complete: "
+                f"{n_validated} validated, {n_active} active, "
+                f"{n_opportunity} opportunity, {n_watchlist} watchlist"
+            )
+
+            # Push full results to all clients
+            await broadcast({"type": "scan_result", "data": result})
+
+            # Fresh prices landed — refresh My Positions alerts on the UI
+            # (invalidate the price cache so the next /api/my-positions call is fresh)
+            _price_cache_clear()
+            await broadcast({"type": "my_positions_changed", "reason": "scan"})
+            return True
+
+        except Exception as exc:
+            state.scan_error = str(exc)
+            logger.error(f"Scan failed: {exc}\n{traceback.format_exc()}")
+            await broadcast({"type": "scan_error", "error": str(exc)})
+            return False
+
+        finally:
+            state.is_scanning = False
+            _update_next_scan_time()
+            await broadcast(state.snapshot())
 
 
 def _update_next_scan_time():
@@ -857,7 +857,7 @@ async def get_scan_results():
 
 @app.post("/api/scan-now")
 async def trigger_scan(_auth: None = Depends(require_dashboard_auth)):
-    if state.is_scanning:
+    if state.is_scanning or _scan_lock.locked():
         return {"status": "busy", "message": "Scan already running"}
     asyncio.create_task(run_scan())
     return {"status": "started"}
@@ -874,7 +874,7 @@ async def get_scan_history():
 
 
 @app.get("/api/portfolio")
-async def get_portfolio():
+async def get_portfolio(_auth: None = Depends(require_dashboard_auth)):
     try:
         executor = AlpacaExecutor()
         if not executor.is_connected():
@@ -923,12 +923,20 @@ class ClosePositionRequest(BaseModel):
     reason: Optional[str] = "MANUAL"
 
 
-def _validate_manual_swing_plan(req: AddPositionRequest) -> None:
-    """Require a concrete 3-7 trading-day exit plan unless explicitly forced."""
-    if req.force:
+def _validate_manual_swing_plan_values(
+    *,
+    entry_price: float,
+    stop: Optional[float],
+    target: Optional[float] = None,
+    time_stop_days: Optional[int] = DEFAULT_TIME_STOP_DAYS,
+    force: bool = False,
+) -> None:
+    """Require a concrete 1-7 trading-day exit plan unless explicitly forced."""
+    if force:
         return
-    stop = float(req.stop or 0.0)
-    if stop <= 0 or stop >= float(req.entry_price or 0.0):
+    entry = float(entry_price or 0.0)
+    stop_value = float(stop or 0.0)
+    if stop_value <= 0 or stop_value >= entry:
         raise HTTPException(
             status_code=400,
             detail={
@@ -936,7 +944,16 @@ def _validate_manual_swing_plan(req: AddPositionRequest) -> None:
                 "msg": "Manual swing entries require a stop below entry. Use force=true only for an intentional override.",
             },
         )
-    days = int(req.time_stop_days or DEFAULT_TIME_STOP_DAYS)
+    target_value = float(target or 0.0)
+    if target_value > 0 and target_value <= entry:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "kind": "TARGET_INVALID",
+                "msg": "Manual swing target must be above entry.",
+            },
+        )
+    days = int(time_stop_days or DEFAULT_TIME_STOP_DAYS)
     if days < 1 or days > 7:
         raise HTTPException(
             status_code=400,
@@ -945,6 +962,23 @@ def _validate_manual_swing_plan(req: AddPositionRequest) -> None:
                 "msg": "Manual swing time stop must be 1-7 trading days. Use force=true only for an intentional override.",
             },
         )
+
+
+def _validate_manual_swing_plan(req: AddPositionRequest) -> None:
+    _validate_manual_swing_plan_values(
+        entry_price=req.entry_price,
+        stop=req.stop,
+        target=req.target,
+        time_stop_days=req.time_stop_days,
+        force=req.force,
+    )
+
+
+def _positions_unavailable(exc: RuntimeError) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={"kind": "POSITIONS_UNAVAILABLE", "msg": str(exc)},
+    )
 
 
 def _enrich_positions(positions: List[dict]) -> List[dict]:
@@ -976,9 +1010,12 @@ def _enrich_positions(positions: List[dict]) -> List[dict]:
 async def list_my_positions():
     # Reload from disk each request — record_high_water may have written
     # concurrently from the scan loop.
-    positions = my_positions.list_all()
-    enriched = _enrich_positions(positions)
-    summary = my_positions.summary()
+    try:
+        positions = my_positions.list_all()
+        enriched = _enrich_positions(positions)
+        summary = my_positions.summary()
+    except RuntimeError as exc:
+        raise _positions_unavailable(exc)
     realized_today = summary.get("realized_today_dollars", 0.0) or 0.0
     daily_pnl_pct = (realized_today / ACCOUNT_SIZE * 100.0) if ACCOUNT_SIZE > 0 else 0.0
     return {
@@ -1119,6 +1156,8 @@ async def add_my_position(req: AddPositionRequest, _auth: None = Depends(require
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise _positions_unavailable(exc)
 
     # Evaluate immediately so the client sees alert state without a round-trip
     cp = live if live else _fetch_live_prices([pos["ticker"]]).get(pos["ticker"])
@@ -1140,10 +1179,39 @@ async def update_my_position(
     req: UpdatePositionRequest,
     _auth: None = Depends(require_dashboard_auth),
 ):
-    updated = my_positions.update(
-        position_id,
+    try:
+        current = my_positions.get(position_id)
+    except RuntimeError as exc:
+        raise _positions_unavailable(exc)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Position not found")
+    merged = {
+        **current,
         **{k: v for k, v in req.model_dump().items() if v is not None},
+    }
+    _validate_manual_swing_plan_values(
+        entry_price=merged.get("entry_price"),
+        stop=merged.get("stop"),
+        target=merged.get("target"),
+        time_stop_days=merged.get("time_stop_days"),
     )
+    risk = validate_position_risk(
+        merged.get("entry_price"),
+        merged.get("stop"),
+        merged.get("shares"),
+    )
+    if not risk["ok"]:
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "RISK_TOO_HIGH", **risk},
+        )
+    try:
+        updated = my_positions.update(
+            position_id,
+            **{k: v for k, v in req.model_dump().items() if v is not None},
+        )
+    except RuntimeError as exc:
+        raise _positions_unavailable(exc)
     if updated is None:
         raise HTTPException(status_code=404, detail="Position not found")
     await broadcast({"type": "my_positions_changed", "reason": "updated"})
@@ -1165,6 +1233,8 @@ async def close_my_position(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise _positions_unavailable(exc)
     if closed is None:
         raise HTTPException(status_code=404, detail="Position not found")
     await broadcast({"type": "my_positions_changed", "reason": "closed"})
@@ -1173,7 +1243,10 @@ async def close_my_position(
 
 @app.delete("/api/my-positions/{position_id}")
 async def delete_my_position(position_id: str, _auth: None = Depends(require_dashboard_auth)):
-    ok = my_positions.delete(position_id)
+    try:
+        ok = my_positions.delete(position_id)
+    except RuntimeError as exc:
+        raise _positions_unavailable(exc)
     if not ok:
         raise HTTPException(status_code=404, detail="Position not found")
     await broadcast({"type": "my_positions_changed", "reason": "deleted"})

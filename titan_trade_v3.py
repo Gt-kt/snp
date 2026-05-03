@@ -2143,11 +2143,11 @@ def manage_open_positions(executor, data, settings, logger=None):
                 add_on_trigger = float(entry.get('add_on_trigger', 0.0) or 0.0)
                 existing_buys = [o for o in open_orders_by_symbol.get(symbol, []) if o.get('side') == 'buy']
                 if current_price >= add_on_trigger > 0 and market_status in ('STRONG_BULL', 'BULL', 'RECOVERY'):
-                    if MarketHours.is_market_open() and current_price <= add_on_trigger * 1.02 and not existing_buys and executor and executor.is_connected():
-                        buy_limit = min(round(current_price * 1.002, 2), round(add_on_trigger * 1.01, 2))
-                        if executor.submit_limit_order(symbol, int(entry['add_on_qty']), side='buy', limit_price=buy_limit):
-                            entry['add_on_order_pending'] = True
-                            actions.append(f"{symbol}: submitted add-on for {entry['add_on_qty']} @ ${buy_limit:.2f}")
+                    if MarketHours.is_market_open() and current_price <= add_on_trigger * 1.02 and not existing_buys:
+                        entry['add_on_order_pending'] = False
+                        actions.append(
+                            f"{symbol}: add-on trigger hit; auto add-on skipped because add-on fills are not bracket-protected"
+                        )
                     elif current_price > add_on_trigger * 1.02:
                         entry['add_on_order_pending'] = False
                         entry['add_on_filled'] = False
@@ -2168,11 +2168,9 @@ def manage_open_positions(executor, data, settings, logger=None):
 
             if float(entry.get('target', 0.0) or 0.0) > 0 and current_price >= float(entry['target']) and shares > 0:
                 if executor and executor.is_connected() and MarketHours.is_market_open():
-                    executor.cancel_orders_for_symbol(symbol, side='sell')
-                    if submit_exit_order(executor, symbol, shares, current_price):
-                        removals.append(symbol)
-                        actions.append(f"{symbol}: exited final target")
-                        continue
+                    actions.append(
+                        f"{symbol}: final target reached; auto exit skipped to preserve broker-side protection"
+                    )
                 elif not MarketHours.is_market_open():
                     actions.append(f"{symbol}: final target reached, waiting for market-open exit")
 
@@ -2236,8 +2234,10 @@ def get_market_data(tickers_override=None, cache_ttl_hours=DEFAULT_OHLCV_TTL_HOU
                 pd.Series(tickers).to_json(SP500_CACHE_FILE)
             except Exception as e:
                 print(f"  [!] CRITICAL: S&P 500 list download failed: {e}")
-                print(f"  [!] Falling back to 5 tickers only -- results will be incomplete!")
-                tickers = ["NVDA", "MSFT", "AAPL", "AMD", "TSLA"]
+                raise RuntimeError(
+                    "S&P 500 universe download failed and no valid cache is available. "
+                    "Refusing to run an incomplete five-ticker scan."
+                ) from e
     
     tickers = list(dict.fromkeys([t.strip().upper() for t in tickers if t]))
     sector_tickers = [ticker.upper() for ticker in SECTOR_ETFS.values()]

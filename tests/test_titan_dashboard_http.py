@@ -132,6 +132,24 @@ def test_dashboard_mutations_require_token_when_configured(monkeypatch):
             os.unlink(path)
 
 
+def test_dashboard_portfolio_requires_token_when_configured(monkeypatch):
+    monkeypatch.setattr(td, "DASHBOARD_API_TOKEN", "secret-token")
+    class DummyExecutor:
+        def is_connected(self):
+            return False
+
+    monkeypatch.setattr(td, "AlpacaExecutor", DummyExecutor)
+    try:
+        with _mk_client() as c:
+            r = c.get("/api/portfolio")
+            assert r.status_code == 401
+            r2 = c.get("/api/portfolio", headers={"X-Titan-Token": "secret-token"})
+            assert r2.status_code == 200
+            assert r2.json()["status"] == "disconnected"
+    finally:
+        monkeypatch.setattr(td, "DASHBOARD_API_TOKEN", "")
+
+
 def test_dashboard_rejects_bind_all_without_auth(monkeypatch):
     monkeypatch.setattr(td, "DASHBOARD_API_TOKEN", "")
     parser = argparse.ArgumentParser()
@@ -152,6 +170,34 @@ def test_dashboard_allows_bind_all_with_token(monkeypatch):
 
     td.validate_dashboard_args(parser, args)
     monkeypatch.setattr(td, "DASHBOARD_API_TOKEN", "")
+
+
+def test_run_scan_lock_prevents_overlap(monkeypatch):
+    calls = []
+
+    def fake_scan(settings):
+        import time
+        calls.append(1)
+        time.sleep(0.05)
+        return {
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "validated": [],
+            "active": [],
+            "opportunity": [],
+            "watchlist": [],
+            "stalk_orders": [],
+        }
+
+    async def exercise():
+        monkeypatch.setattr(td, "_run_scan_sync", fake_scan)
+        first = asyncio.create_task(td.run_scan())
+        await asyncio.sleep(0)
+        second = asyncio.create_task(td.run_scan())
+        return await asyncio.gather(first, second)
+
+    result = asyncio.run(exercise())
+    assert result == [True, False]
+    assert len(calls) == 1
 
 
 def test_validate_ok_small_position(monkeypatch):
@@ -375,6 +421,30 @@ def test_add_position_ok_when_within_all_gates(monkeypatch):
             assert body["position"]["ticker"] == "AAPL"
             assert body["risk"]["level"] == "OK"
             assert body["sanity"]["ok"] is True
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def test_update_position_rejects_invalid_plan(monkeypatch):
+    path = _fresh_tracker()
+    try:
+        _stub_live_price(monkeypatch, 100.0)
+        with _mk_client() as c:
+            r = c.post("/api/my-positions", json={
+                "ticker": "AAPL", "entry_price": 100.0,
+                "shares": 1, "stop": 95.0, "target": 110.0,
+            })
+            assert r.status_code == 200
+            position_id = r.json()["position"]["id"]
+
+            bad_stop = c.patch(f"/api/my-positions/{position_id}", json={"stop": 101.0})
+            assert bad_stop.status_code == 400
+            assert bad_stop.json()["detail"]["kind"] == "PLAN_INVALID"
+
+            bad_time = c.patch(f"/api/my-positions/{position_id}", json={"time_stop_days": 15})
+            assert bad_time.status_code == 400
+            assert bad_time.json()["detail"]["kind"] == "TIME_STOP_OUT_OF_RANGE"
     finally:
         if os.path.exists(path):
             os.unlink(path)

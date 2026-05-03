@@ -7,6 +7,7 @@ import tempfile
 from datetime import datetime, timedelta
 
 import numpy as np
+import pytest
 
 # Allow import when running from repo root
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -185,7 +186,8 @@ def test_atomic_write_survives_bad_file():
         with open(path, "w") as f:
             f.write("{not valid json")
         mp = MyPositions(path)
-        assert mp.list_all() == []
+        with pytest.raises(RuntimeError, match="Manual positions are unavailable"):
+            mp.list_all()
         assert os.path.exists(path + ".corrupt.bak")
         os.unlink(path + ".corrupt.bak")
     finally:

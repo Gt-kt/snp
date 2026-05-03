@@ -77,6 +77,7 @@ class MyPositions:
         self.log_file = log_file
         self.positions: list[dict] = []
         self._lock = threading.RLock()
+        self._load_error: Optional[str] = None
         self._load()
 
     # ------------------------------------------------------------------ I/O
@@ -99,6 +100,14 @@ class MyPositions:
             except Exception:
                 print(f"  WARNING: {self.log_file} corrupted and backup failed.")
             self.positions = []
+            self._load_error = (
+                f"{self.log_file} is corrupt. Backup created at {bak}. "
+                "Manual positions are unavailable until the file is repaired or removed."
+            )
+
+    def _ensure_available(self) -> None:
+        if self._load_error:
+            raise RuntimeError(self._load_error)
 
     def _save(self) -> None:
         dir_name = os.path.dirname(self.log_file) or "."
@@ -131,6 +140,7 @@ class MyPositions:
         atr: Optional[float] = None,
     ) -> dict:
         """Add a new open position. Raises ValueError on bad input."""
+        self._ensure_available()
         ticker = (ticker or "").strip().upper()
         if not ticker:
             raise ValueError("ticker is required")
@@ -185,6 +195,7 @@ class MyPositions:
 
     def update(self, position_id: str, **fields) -> Optional[dict]:
         """Patch editable fields (stop, target, time_stop_days, notes, atr, sector)."""
+        self._ensure_available()
         allowed = {"stop", "target", "time_stop_days", "notes", "entry_note", "atr", "sector"}
         with self._lock:
             pos = self._find(position_id)
@@ -210,6 +221,7 @@ class MyPositions:
         reason: str = "MANUAL",
     ) -> Optional[dict]:
         """Mark a position CLOSED and record P&L."""
+        self._ensure_available()
         exit_date = exit_date or today_et_str()
         try:
             datetime.strptime(exit_date, "%Y-%m-%d")
@@ -239,6 +251,7 @@ class MyPositions:
             return dict(pos)
 
     def delete(self, position_id: str) -> bool:
+        self._ensure_available()
         with self._lock:
             before = len(self.positions)
             self.positions = [p for p in self.positions if p.get("id") != position_id]
@@ -248,15 +261,18 @@ class MyPositions:
             return False
 
     def get(self, position_id: str) -> Optional[dict]:
+        self._ensure_available()
         with self._lock:
             pos = self._find(position_id)
             return dict(pos) if pos else None
 
     def list_all(self) -> list[dict]:
+        self._ensure_available()
         with self._lock:
             return [dict(p) for p in self.positions]
 
     def list_open(self) -> list[dict]:
+        self._ensure_available()
         with self._lock:
             return [dict(p) for p in self.positions if p.get("status") == "OPEN"]
 
@@ -271,6 +287,7 @@ class MyPositions:
         """Update `highest_since_entry` for each open position given current
         prices {ticker: price}. Persists changes. Returns True if any row changed.
         """
+        self._ensure_available()
         if not prices:
             return False
         dirty = False
@@ -460,6 +477,7 @@ class MyPositions:
     # ---------------------------------------------------------- Summary
     def summary(self) -> dict:
         """Aggregate stats across closed trades + today's realized P&L."""
+        self._ensure_available()
         with self._lock:
             positions = [dict(p) for p in self.positions]
         closed = [

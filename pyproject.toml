@@ -17,6 +17,7 @@ dependencies = [
   "python-dotenv>=1.0",
   "pytz>=2024.1",
   "alpaca-trade-api>=3.2",
+  "websockets>=9,<11",
   "plyer>=2.1",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
@@ -31,4 +32,8 @@ titan-dashboard = "titan_dashboard:main"
 
 [tool.setuptools]
 py-modules = ["titan_trade_v3", "titan_dashboard", "dashboard_app"]
-packages = ["titan"]
+packages = ["titan", "static"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+static = ["*.html", "*.css", "*.js", "*.legacy"]
