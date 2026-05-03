@@ -69,6 +69,12 @@ titan-dashboard
 
 Open `http://127.0.0.1:8000`.
 
+On Windows, the simplest launcher is:
+
+```powershell
+.\RUN_DASHBOARD.bat
+```
+
 By default the dashboard is position-tracking only and reads the latest saved
 scan. To make the dashboard run scans automatically on startup and every
 interval:

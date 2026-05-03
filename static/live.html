@@ -247,6 +247,38 @@ body {
   margin-top: 2px;
 }
 
+.health-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  gap: 10px;
+  padding: 0 24px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.health-item {
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  min-height: 58px;
+}
+.health-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.health-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.health-ok { color: var(--accent-green); }
+.health-warn { color: var(--accent-amber); }
+.health-bad { color: var(--accent-red); }
+
 /* --- MAIN LAYOUT ------------------------------------------------------- */
 .main-grid {
   display: grid;
@@ -282,6 +314,62 @@ body {
   color: var(--accent-blue);
 }
 .section-badge.green { background: rgba(16, 185, 129, 0.15); color: var(--accent-green); }
+
+.manual-plan {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(300px, 1.2fr);
+  gap: 14px;
+}
+.manual-plan-primary,
+.manual-plan-checklist {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  padding: 14px;
+}
+.manual-plan-action {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+.manual-plan-buy { color: var(--accent-green); }
+.manual-plan-wait { color: var(--accent-amber); }
+.manual-plan-skip { color: var(--text-muted); }
+.manual-plan-text {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.manual-plan-levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.manual-plan-level {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+}
+.manual-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 5px 0;
+}
+.manual-check::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  flex: 0 0 auto;
+}
 
 /* --- TABLE ------------------------------------------------------------- */
 .table-wrap {
@@ -926,6 +1014,8 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
   .topbar { padding: 0 12px; flex-wrap: wrap; height: auto; min-height: 56px; gap: 8px; padding-top: 8px; padding-bottom: 8px; }
   .topbar-center { order: 3; width: 100%; justify-content: center; }
   .stats-row { padding: 12px; }
+  .health-row { grid-template-columns: 1fr 1fr; padding: 0 12px 12px; }
+  .manual-plan { grid-template-columns: 1fr; }
   .section { padding: 16px 12px; }
   .stat-card { min-width: 100px; padding: 8px 12px; }
   .stat-card .value { font-size: 16px; }
@@ -1006,6 +1096,49 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
     <div class="label">Scan Count</div>
     <div class="value mono" id="stat-scans">0</div>
     <div class="sub" id="stat-last-scan">never</div>
+  </div>
+</div>
+
+<div class="health-row" id="health-row">
+  <div class="health-item">
+    <div class="health-label">Broker</div>
+    <div class="health-value" id="health-broker">checking...</div>
+  </div>
+  <div class="health-item">
+    <div class="health-label">Mode</div>
+    <div class="health-value" id="health-mode">--</div>
+  </div>
+  <div class="health-item">
+    <div class="health-label">Scan Freshness</div>
+    <div class="health-value" id="health-scan">--</div>
+  </div>
+  <div class="health-item">
+    <div class="health-label">Tracker</div>
+    <div class="health-value" id="health-positions">--</div>
+  </div>
+  <div class="health-item">
+    <div class="health-label">Dashboard</div>
+    <div class="health-value" id="health-dashboard">--</div>
+  </div>
+</div>
+
+<div class="section" id="section-manual-plan">
+  <div class="section-header">
+    <span class="section-title">Manual Trade Plan</span>
+    <span class="section-badge" id="manual-plan-badge">WAIT</span>
+  </div>
+  <div class="manual-plan">
+    <div class="manual-plan-primary">
+      <div class="manual-plan-action manual-plan-skip" id="manual-plan-action">WAIT FOR SCAN</div>
+      <div class="manual-plan-text" id="manual-plan-text">Run a scan to see whether anything is tradable now, watch-only, extended, or broken.</div>
+      <div class="manual-plan-levels" id="manual-plan-levels"></div>
+    </div>
+    <div class="manual-plan-checklist" id="manual-plan-checklist">
+      <div class="manual-check">Only buy inside the planned buy zone.</div>
+      <div class="manual-check">Do not chase above max buy.</div>
+      <div class="manual-check">Enter actual fill, shares, stop, target, and 3-5 day time stop after buying.</div>
+      <div class="manual-check">Sell manually on stop, target, trailing stop, or time stop.</div>
+    </div>
   </div>
 </div>
 
@@ -1210,6 +1343,9 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
   const $ = id => document.getElementById(id);
   const money = v => `$${Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
   const pct = (v, d=1) => `${Number(v||0).toFixed(d)}%`;
+  const escapeHtml = v => String(v ?? "").replace(/[&<>"']/g, ch => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[ch]));
 
   function dashboardToken() {
     return localStorage.getItem("titanDashboardToken") || "";
@@ -1301,6 +1437,124 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
     statusEl.className = "scan-status";
   }
 
+  async function loadHealth() {
+    try {
+      const r = await fetch("/api/health");
+      if (!r.ok) return;
+      renderHealth(await r.json());
+    } catch (e) {
+      console.error("loadHealth failed:", e);
+    }
+  }
+
+  function renderHealth(h) {
+    const broker = $("health-broker");
+    const mode = $("health-mode");
+    const scan = $("health-scan");
+    const positions = $("health-positions");
+    const dashboard = $("health-dashboard");
+    if (!broker || !mode || !scan || !positions || !dashboard) return;
+
+    broker.textContent = h.alpaca_keys_configured ? "KEYS LOADED" : "NO KEYS";
+    broker.className = `health-value ${h.alpaca_keys_configured ? "health-ok" : "health-warn"}`;
+
+    mode.textContent = String(h.broker_mode || "paper").toUpperCase();
+    mode.className = `health-value ${h.broker_mode === "live" ? "health-warn" : "health-ok"}`;
+
+    if (h.is_scanning) {
+      scan.textContent = "SCANNING";
+      scan.className = "health-value health-ok";
+    } else if (h.scan_age_minutes == null) {
+      scan.textContent = "NO SCAN YET";
+      scan.className = "health-value health-warn";
+    } else {
+      scan.textContent = `${Number(h.scan_age_minutes).toFixed(0)}M AGO`;
+      scan.className = `health-value ${h.scan_stale ? "health-warn" : "health-ok"}`;
+    }
+
+    positions.textContent = h.positions_ok ? "OK" : "BLOCKED";
+    positions.className = `health-value ${h.positions_ok ? "health-ok" : "health-bad"}`;
+    positions.title = h.positions_error || "";
+
+    dashboard.textContent = h.dashboard_auth ? "TOKEN ON" : "LOCAL OPEN";
+    dashboard.className = `health-value ${h.dashboard_auth ? "health-ok" : "health-warn"}`;
+  }
+
+  function renderManualPlan(data) {
+    const action = $("manual-plan-action");
+    const text = $("manual-plan-text");
+    const levels = $("manual-plan-levels");
+    const badge = $("manual-plan-badge");
+    if (!action || !text || !levels || !badge) return;
+
+    const decision = data.trade_decision || null;
+    const stalkOrders = data.stalk_orders || [];
+    const inZone = stalkOrders.filter(o =>
+      !o.already_held &&
+      o.live_status === "IN_ZONE" &&
+      !["HIGH", "UNKNOWN"].includes((o.event_risk || {}).status || "")
+    );
+    const blocked = stalkOrders.filter(o => ["BROKEN", "PAST_MAX_BUY"].includes(o.live_status));
+
+    levels.innerHTML = "";
+    if (decision && decision.action === "BUY") {
+      const c = decision.candidate || {};
+      action.textContent = `BUY ${decision.ticker}`;
+      action.className = "manual-plan-action manual-plan-buy";
+      badge.textContent = "TRADEABLE";
+      badge.className = "section-badge green";
+      text.textContent = decision.reason || "Candidate is actionable only while price stays inside the plan.";
+      levels.innerHTML = [
+        ["Limit", c.limit_price],
+        ["Stop", c.stop_price],
+        ["Target", c.target_price],
+        ["Risk", c.risk_dollars],
+      ].filter(([, v]) => v != null).map(([k, v]) =>
+        `<div class="manual-plan-level">${k}: ${k === "Risk" ? "$" + Number(v || 0).toFixed(0) : money(v)}</div>`
+      ).join("");
+      return;
+    }
+
+    if (inZone.length) {
+      const best = inZone[0];
+      action.textContent = `REVIEW ${best.ticker}`;
+      action.className = "manual-plan-action manual-plan-wait";
+      badge.textContent = "VERIFY";
+      badge.className = "section-badge";
+      text.textContent = "A candidate is inside the live buy zone, but the final decision did not issue a clean BUY. Verify the plan before buying manually.";
+      levels.innerHTML = `
+        <div class="manual-plan-level">Limit: ${money(best.limit_price)}</div>
+        <div class="manual-plan-level">Stop: ${money(best.stop_price)}</div>
+        <div class="manual-plan-level">Target: ${money(best.target_price)}</div>
+      `;
+      return;
+    }
+
+    if (decision && decision.action === "WAIT") {
+      action.textContent = "WAIT";
+      action.className = "manual-plan-action manual-plan-wait";
+      badge.textContent = "WAIT";
+      badge.className = "section-badge";
+      text.textContent = decision.reason || "Best setup is blocked or not inside the buy plan.";
+      return;
+    }
+
+    if (blocked.length) {
+      action.textContent = "DO NOT CHASE";
+      action.className = "manual-plan-action manual-plan-skip";
+      badge.textContent = "BLOCKED";
+      badge.className = "section-badge";
+      text.textContent = `${blocked.length} stalk candidate${blocked.length === 1 ? "" : "s"} are broken or past max buy. Wait for a new setup.`;
+      return;
+    }
+
+    action.textContent = "NO TRADE";
+    action.className = "manual-plan-action manual-plan-skip";
+    badge.textContent = "CASH";
+    badge.className = "section-badge";
+    text.textContent = "No clean manual swing entry is available from this scan.";
+  }
+
   // ---- Render: Pro Scan Results ----------------------------------------
   function renderScanResult(data) {
     if (!data) return;
@@ -1376,6 +1630,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
       ab.className = "alert-banner visible alert-quiet";
       ab.innerHTML = `<strong>QUIET</strong> &mdash; No setups found. Cash is a position.`;
     }
+    renderManualPlan(data);
 
     // Daily loss cap banner
     const lcb = $("loss-cap-banner");
@@ -2102,6 +2357,7 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
         if (msg.type === "scan_result") {
           scanResultCount++;
           renderScanResult(msg.data);
+          loadHealth();
 
           // Auto-refresh: visual flash to signal new data (WS already renders in-place)
           if (autoRefresh && scanResultCount > 1) {
@@ -2124,9 +2380,17 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
     };
   }
 
-  window.requestScan = function() {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({action: "scan_now"}));
+  window.requestScan = async function() {
+    const btn = $("btn-scan");
+    if (btn) btn.disabled = true;
+    try {
+      const r = await apiFetch("/api/scan-now", {method: "POST"});
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        $("scan-status").textContent = body.detail || body.message || "Scan request failed";
+      }
+    } finally {
+      setTimeout(() => { if (btn) btn.disabled = false; }, 1500);
     }
   };
 
@@ -2160,7 +2424,9 @@ tr.row-sell-signal.row-timestop { background: rgba(245, 158, 11, 0.05); }
   })();
 
   loadMyPositions();
+  loadHealth();
   setInterval(loadMyPositions, 60000);  // refresh alerts every minute between scans
+  setInterval(loadHealth, 60000);
 
   // Update "time ago" labels every 30s
   setInterval(() => {

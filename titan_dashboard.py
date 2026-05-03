@@ -32,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True, encoding="utf-8-sig")
 
 # ---------------------------------------------------------------------------
 # Import pro scanner + v3 utilities
@@ -115,6 +115,7 @@ except ModuleNotFoundError:
     STATIC_DIR = APP_DIR / "static"
 DATA_DIR = Path(os.environ.get("TITAN_DATA_DIR", "data")).resolve()
 SCAN_FILE = DATA_DIR / "latest_scan.json"
+STALE_SCAN_MINUTES = int(os.environ.get("TITAN_STALE_SCAN_MINUTES", "45") or "45")
 
 # ---------------------------------------------------------------------------
 # App state
@@ -827,9 +828,7 @@ async def websocket_endpoint(ws: WebSocket):
             data = await ws.receive_text()
             msg = json.loads(data)
 
-            if msg.get("action") == "scan_now" and not state.is_scanning:
-                asyncio.create_task(run_scan())
-            elif msg.get("action") == "ping":
+            if msg.get("action") == "ping":
                 await ws.send_text(json.dumps({"type": "pong"}))
 
     except WebSocketDisconnect:
@@ -866,6 +865,11 @@ async def trigger_scan(_auth: None = Depends(require_dashboard_auth)):
 @app.get("/api/status")
 async def get_status():
     return state.snapshot()
+
+
+@app.get("/api/health")
+async def get_health():
+    return build_health_payload()
 
 
 @app.get("/api/scan-history")
@@ -979,6 +983,58 @@ def _positions_unavailable(exc: RuntimeError) -> HTTPException:
         status_code=503,
         detail={"kind": "POSITIONS_UNAVAILABLE", "msg": str(exc)},
     )
+
+
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        text = value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def build_health_payload() -> dict:
+    """Return non-secret operational health for the dashboard UI."""
+    scan_time = _parse_iso_datetime(state.last_scan_time)
+    scan_age_minutes = None
+    if scan_time:
+        scan_age_minutes = max(
+            0.0,
+            (datetime.now(timezone.utc) - scan_time).total_seconds() / 60.0,
+        )
+    alpaca_key = bool(os.environ.get("APCA_API_KEY_ID"))
+    alpaca_secret = bool(os.environ.get("APCA_API_SECRET_KEY"))
+    paper_text = os.environ.get("TITAN_ALPACA_USE_PAPER", os.environ.get("ALPACA_USE_PAPER", "true"))
+    broker_mode = "paper" if str(paper_text).strip().lower() not in {"0", "false", "no", "off"} else "live"
+    positions_ok = True
+    positions_error = None
+    try:
+        my_positions.list_all()
+    except RuntimeError as exc:
+        positions_ok = False
+        positions_error = str(exc)
+
+    return {
+        "status": "success",
+        "dashboard_auth": bool(DASHBOARD_API_TOKEN),
+        "alpaca_keys_configured": bool(alpaca_key and alpaca_secret),
+        "broker_mode": broker_mode,
+        "auto_scan_enabled": state.auto_scan_enabled,
+        "is_scanning": state.is_scanning,
+        "last_scan_time": state.last_scan_time,
+        "scan_age_minutes": round(scan_age_minutes, 1) if scan_age_minutes is not None else None,
+        "scan_stale": scan_age_minutes is None or scan_age_minutes > STALE_SCAN_MINUTES,
+        "stale_after_minutes": STALE_SCAN_MINUTES,
+        "data_dir": str(DATA_DIR),
+        "scan_file_exists": SCAN_FILE.exists(),
+        "positions_ok": positions_ok,
+        "positions_error": positions_error,
+    }
 
 
 def _enrich_positions(positions: List[dict]) -> List[dict]:

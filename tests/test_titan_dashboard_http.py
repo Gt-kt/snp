@@ -172,6 +172,29 @@ def test_dashboard_allows_bind_all_with_token(monkeypatch):
     monkeypatch.setattr(td, "DASHBOARD_API_TOKEN", "")
 
 
+def test_dashboard_health_reports_non_secret_runtime_state(monkeypatch):
+    path = _fresh_tracker()
+    try:
+        monkeypatch.setenv("APCA_API_KEY_ID", "key")
+        monkeypatch.setenv("APCA_API_SECRET_KEY", "secret")
+        monkeypatch.setenv("TITAN_ALPACA_USE_PAPER", "true")
+        td.state.last_scan_time = "2026-01-01T00:00:00+00:00"
+
+        with _mk_client() as c:
+            r = c.get("/api/health")
+            assert r.status_code == 200
+            body = r.json()
+            assert body["status"] == "success"
+            assert body["alpaca_keys_configured"] is True
+            assert body["broker_mode"] == "paper"
+            assert "secret" not in str(body).lower()
+            assert "data_dir" in body
+    finally:
+        td.state.last_scan_time = None
+        if os.path.exists(path):
+            os.unlink(path)
+
+
 def test_run_scan_lock_prevents_overlap(monkeypatch):
     calls = []
 
